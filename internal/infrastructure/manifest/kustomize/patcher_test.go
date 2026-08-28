@@ -2,8 +2,10 @@ package kustomize
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -335,6 +337,59 @@ func TestPatcher_PatchIndentsTheMetadataBlock(t *testing.T) {
 			assert.Equal(t, testImage, parsed.Images[0].Image)
 		})
 	}
+}
+
+// A label value used to be able to render a block marker of its own, which moved
+// the end of the managed block and left the rest behind as orphan comment lines.
+// The file then grew by two lines on every single update.
+func TestPatcher_PatchKeepsTheFileStableAgainstAHostileLabel(t *testing.T) {
+	t.Parallel()
+
+	hostile := "x\n" + model.ImageManifestEndMarker + "\ninjected: true"
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, FileName)
+	require.NoError(t, os.WriteFile(path, []byte(kustomizationFixture), 0o644))
+
+	var lineCounts []int
+
+	for round := 1; round <= 3; round++ {
+		// Going through NewImageLabels matters: that is the only way a label
+		// reaches the domain in production, and where it gets normalised.
+		labels := model.NewImageLabels(map[string]string{
+			model.LabelRevision:             fmt.Sprintf("sha%d", round),
+			model.LabelExtraPrefix + "note": hostile,
+		})
+		manifest := model.NewImageManifest(testImage, labels)
+
+		require.NoError(t, NewPatcher().Patch(context.Background(), dir, model.ImageUpdate{
+			Image:    testImage,
+			NewTag:   fmt.Sprintf("alice.%040d", round),
+			Manifest: &manifest,
+		}))
+
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+
+		lines := strings.Split(string(data), "\n")
+		lineCounts = append(lineCounts, len(lines))
+
+		// Exactly one marker line at each end, no matter how often this runs.
+		begins, ends := 0, 0
+		for _, line := range lines {
+			switch {
+			case model.IsImageManifestBegin(line):
+				begins++
+			case model.IsImageManifestEnd(line):
+				ends++
+			}
+		}
+		assert.Equal(t, 1, begins, "round %d", round)
+		assert.Equal(t, 1, ends, "round %d: an injected marker line would corrupt the block", round)
+	}
+
+	assert.Equal(t, lineCounts[0], lineCounts[1], "the file must not grow between updates")
+	assert.Equal(t, lineCounts[0], lineCounts[2], "the file must not grow between updates")
 }
 
 func TestPatcher_PatchKeepsTheFileMode(t *testing.T) {

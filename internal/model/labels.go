@@ -50,25 +50,32 @@ type ImageLabels struct {
 	ImageSizeBytes int64
 }
 
+// NewImageLabels reads the well-known labels out of the raw image config labels.
+//
+// Every value is normalised on the way in, because the labels were chosen by
+// whoever pushed the image. See label_value.go for what that means per field. A
+// value that cannot be normalised is dropped, so a consumer only ever sees
+// something it can safely render.
 func NewImageLabels(labels map[string]string) ImageLabels {
 	return ImageLabels{
-		Source:     labels[LabelSource],
-		Revision:   labels[LabelRevision],
-		Created:    labels[LabelCreated],
-		PRNumber:   labels[LabelPRNumber],
-		PRAuthor:   labels[LabelPRAuthor],
-		PRTitle:    labels[LabelPRTitle],
-		BuildURL:   labels[LabelBuildURL],
-		BuildRunID: labels[LabelBuildRunID],
-		BuildRef:   labels[LabelBuildRef],
-		BuildEvent: labels[LabelBuildEvent],
-		BuildActor: labels[LabelBuildActor],
+		Source:     sanitizeLabelURL(labels[LabelSource]),
+		Revision:   sanitizeLabelToken(labels[LabelRevision]),
+		Created:    sanitizeLabelToken(labels[LabelCreated]),
+		PRNumber:   sanitizeLabelNumber(labels[LabelPRNumber]),
+		PRAuthor:   sanitizeLabelHandle(labels[LabelPRAuthor]),
+		PRTitle:    sanitizeLabelText(labels[LabelPRTitle]),
+		BuildURL:   sanitizeLabelURL(labels[LabelBuildURL]),
+		BuildRunID: sanitizeLabelToken(labels[LabelBuildRunID]),
+		BuildRef:   sanitizeLabelToken(labels[LabelBuildRef]),
+		BuildEvent: sanitizeLabelToken(labels[LabelBuildEvent]),
+		BuildActor: sanitizeLabelHandle(labels[LabelBuildActor]),
 		Extra:      newExtraLabels(labels),
 	}
 }
 
 // newExtraLabels collects the custom labels under LabelExtraPrefix.
-// Empty values and keys that normalize to nothing are dropped.
+// Empty values and keys that normalize to nothing are dropped, and the values are
+// normalised the same way as a free-form label.
 //
 // Returns:
 //
@@ -78,7 +85,7 @@ func newExtraLabels(labels map[string]string) map[string]string {
 
 	for key, value := range labels {
 		suffix, ok := strings.CutPrefix(key, LabelExtraPrefix)
-		if !ok || value == "" {
+		if !ok {
 			continue
 		}
 
@@ -87,7 +94,12 @@ func newExtraLabels(labels map[string]string) map[string]string {
 			continue
 		}
 
-		extra[normalized] = value
+		sanitized := sanitizeLabelText(value)
+		if sanitized == "" {
+			continue
+		}
+
+		extra[normalized] = sanitized
 	}
 
 	if len(extra) == 0 {

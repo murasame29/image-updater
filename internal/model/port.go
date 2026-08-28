@@ -55,6 +55,10 @@ type ManifestRepository interface {
 	// CreatePullRequest opens a pull request for an already pushed branch and
 	// returns its URL.
 	CreatePullRequest(ctx context.Context, pr PullRequest) (string, error)
+	// FindOpenPullRequest looks for an open pull request whose source branch is
+	// head. It reports an empty URL when there is none, which is how the caller
+	// tells "the branch is already there" from "the update is already open".
+	FindOpenPullRequest(ctx context.Context, owner, repository, head string) (string, error)
 }
 
 // Checkout is a working copy of a manifest repository. It hides the git

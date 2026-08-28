@@ -201,6 +201,30 @@ func (r *Repository) CreatePullRequest(ctx context.Context, pr model.PullRequest
 	return created.GetHTMLURL(), nil
 }
 
+// FindOpenPullRequest looks for an open pull request opened from head.
+//
+// Returns:
+//
+//	The URL of the pull request, an empty string when there is none, or an error
+//	when the lookup itself failed.
+func (r *Repository) FindOpenPullRequest(ctx context.Context, owner, repository, head string) (string, error) {
+	// The head filter has to be qualified with the owner of the branch.
+	pulls, _, err := r.client.PullRequests.List(ctx, owner, repository, &gogithub.PullRequestListOptions{
+		State:       "open",
+		Head:        owner + ":" + head,
+		ListOptions: gogithub.ListOptions{PerPage: 1},
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to list the pull requests of %s/%s: %w", owner, repository, err)
+	}
+
+	if len(pulls) == 0 {
+		return "", nil
+	}
+
+	return pulls[0].GetHTMLURL(), nil
+}
+
 // nonEmpty drops the blank entries of a list of GitHub handles.
 func nonEmpty(values []string) []string {
 	result := make([]string, 0, len(values))

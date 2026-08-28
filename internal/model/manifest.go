@@ -146,6 +146,17 @@ func RenderImageManifestComment(document ImageManifestDocument, indent int) ([]s
 
 	body := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
 
+	// The block is delimited by marker lines, so a value that renders a marker of
+	// its own would move the end of the block and leave the rest behind as orphan
+	// comment lines, growing the file on every later update. Label values are
+	// normalised on the way into the domain, which is what stops a multi line
+	// value from getting here; this is the second line of defence.
+	for _, line := range body {
+		if isBlockMarkerContent(line) {
+			return nil, fmt.Errorf("image manifest carries a block marker of its own: %q", line)
+		}
+	}
+
 	lines := make([]string, 0, len(body)+2)
 	lines = append(lines, commentLine(ImageManifestBeginMarker))
 	for _, line := range body {
@@ -197,6 +208,17 @@ func IsImageManifestEnd(line string) bool {
 func isMarker(line, marker string) bool {
 	content, ok := uncommentLine(line)
 	return ok && strings.TrimSpace(content) == marker
+}
+
+// isBlockMarkerContent reports whether a rendered YAML line would be read back as
+// a marker once the comment prefix is put in front of it.
+//
+// The check has to run on the bare line, before commentLine touches it: the
+// marker predicates expect a line that already carries the prefix, so calling
+// them here would never match and the guard would do nothing.
+func isBlockMarkerContent(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return trimmed == ImageManifestBeginMarker || trimmed == ImageManifestEndMarker
 }
 
 func commentLine(content string) string {

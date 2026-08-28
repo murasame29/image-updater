@@ -183,10 +183,23 @@ func (s *Service) apply(ctx context.Context, target plan) error {
 	}
 
 	if err := checkout.Push(ctx, target.branch); err != nil {
-		if errors.Is(err, model.ErrDuplicatePullRequest) {
+		if !errors.Is(err, model.ErrDuplicatePullRequest) {
+			return model.Retryable(err)
+		}
+
+		// The branch is on the remote, but that does not mean the pull request was
+		// ever opened. A failure between the push and the create leaves the branch
+		// behind, and every later attempt pushes a commit with a different hash, so
+		// treating the rejected push as "already done" would drop the update for
+		// good. Ask before giving up.
+		if err := s.ensureNotAlreadyOpen(ctx, target); err != nil {
 			return err
 		}
-		return model.Retryable(err)
+
+		slog.WarnContext(ctx, "the branch was pushed by an earlier attempt but no pull request exists, opening it now",
+			slog.Any("event", target.event),
+			slog.String("vcs.ref.head.name", target.branch),
+		)
 	}
 
 	url, err := s.manifests.CreatePullRequest(ctx, target.pullRequest(labels))
@@ -200,6 +213,26 @@ func (s *Service) apply(ctx context.Context, target plan) error {
 		slog.String("vcs.ref.head.name", target.branch),
 		slog.String("vcs.change.url", url),
 	)
+
+	return nil
+}
+
+// ensureNotAlreadyOpen decides what a rejected push means.
+//
+// Returns:
+//
+//	nil when the branch exists but no pull request does, so the caller has to open
+//	one; ErrDuplicatePullRequest when the update is genuinely already open; a
+//	retryable error when the lookup could not be made.
+func (s *Service) ensureNotAlreadyOpen(ctx context.Context, target plan) error {
+	url, err := s.manifests.FindOpenPullRequest(ctx, target.location.Owner, target.location.Repository, target.branch)
+	if err != nil {
+		return model.Retryable(err)
+	}
+
+	if url != "" {
+		return fmt.Errorf("%w: %s is already open at %s", model.ErrDuplicatePullRequest, target.branch, url)
+	}
 
 	return nil
 }

@@ -220,6 +220,26 @@ image_updater_{imageName}_{env}_{imageTag}
 
 label が欠けていても更新自体は動く。取れた分だけが PR に反映される。
 
+#### label は信頼されない入力として扱う
+
+label の値を決めるのは「レジストリに push できる人」で、これは「manifest リポジトリの
+PR を approve できる人」よりずっと低い権限。素通しすると、PR の説明に見出しやメンション、
+HTML コメントを注入して本来の差分を隠せてしまう。レビューという統制そのものが狙われる。
+
+そのため、label がドメインに入る唯一の入口（`model.NewImageLabels`）で値を正規化する。
+
+| フィールド | 扱い |
+| --- | --- |
+| `pr.title` | 改行・制御文字を空白に潰し、512 文字で切る。Markdown 描画時にエスケープする |
+| `image.source`, `build.url` | 絶対 http(s) URL でなければ落とす。credential 付きも落とす。壊れた URL は修復せず落とす |
+| `pr.author`, `build.actor` | GitHub のハンドル形式でなければ落とす（メンションと assignee に使うため） |
+| `pr.number` | 10 進数でなければ落とす（URL パスに埋めるため） |
+| `image.revision`, `image.created`, `build.ref`, `build.event`, `build.run_id` | `[A-Za-z0-9._\-/:+]` 以外を含めば落とす |
+| `extra.*` | `pr.title` と同じ扱い |
+
+正規化できない値は加工せず落とす。label は PR の飾りなので、失って困るのは文脈だけ。
+壊れた値を残すほうがコストが高い。
+
 ### 環境変数
 
 | 環境変数                 | 型               | 必須 | 既定値 | 説明                                                  |

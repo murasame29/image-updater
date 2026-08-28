@@ -60,9 +60,23 @@ type fakeRepository struct {
 
 	checkedOut   []string
 	pullRequests []model.PullRequest
+	lookups      []string
 
 	checkoutErr error
 	prErr       error
+
+	// openPullRequestURL is what the lookup finds. Empty means the branch exists
+	// on the remote without a pull request.
+	openPullRequestURL string
+	lookupErr          error
+}
+
+func (r *fakeRepository) FindOpenPullRequest(_ context.Context, _, _, head string) (string, error) {
+	r.lookups = append(r.lookups, head)
+	if r.lookupErr != nil {
+		return "", r.lookupErr
+	}
+	return r.openPullRequestURL, nil
 }
 
 func (r *fakeRepository) Checkout(_ context.Context, repositoryURL string) (model.Checkout, error) {
@@ -306,11 +320,20 @@ func TestService_HandleClassifiesFailures(t *testing.T) {
 			wantRetry: true,
 		},
 		{
-			name: "同じブランチが既にあれば終端",
+			name: "同じ更新の PR が既に open なら終端",
 			setup: func(r *fakeRepository, _ *fakePatcher) {
 				r.checkout.pushErr = model.ErrDuplicatePullRequest
+				r.openPullRequestURL = "https://github.com/example-org/example-manifests/pull/7"
 			},
 			wantErr: model.ErrDuplicatePullRequest,
+		},
+		{
+			name: "PR 検索が失敗したらリトライ",
+			setup: func(r *fakeRepository, _ *fakePatcher) {
+				r.checkout.pushErr = model.ErrDuplicatePullRequest
+				r.lookupErr = errors.New("secondary rate limit")
+			},
+			wantRetry: true,
 		},
 		{
 			name: "push の失敗はリトライ",
@@ -376,6 +399,24 @@ func TestService_HandleWorksWithoutAResolver(t *testing.T) {
 	require.Len(t, patcher.updates, 1)
 	require.NotNil(t, patcher.updates[0].Manifest, "the block is written, it just has nothing to carry")
 	assert.Empty(t, patcher.updates[0].Manifest.GitSHA)
+}
+
+// A failure between the push and the pull request creation used to lose the
+// update: the branch is on the remote, the next attempt pushes a commit with a
+// different hash, and the rejected push was read as "already done".
+func TestService_HandleRecoversAnOrphanBranch(t *testing.T) {
+	t.Parallel()
+
+	service, repository, _ := newAnnotatingService(t, fakeResolver{metadata: testMetadata()})
+	repository.checkout.pushErr = model.ErrDuplicatePullRequest
+	repository.openPullRequestURL = "" // the branch is there, the pull request is not
+
+	require.NoError(t, service.Handle(context.Background(), testPushEvent(testTag)))
+
+	const branch = "image_updater_platform_image-updater_development_" + testTag
+	assert.Equal(t, []string{branch}, repository.lookups, "the branch has to be looked up before giving up")
+	require.Len(t, repository.pullRequests, 1, "the pull request has to be opened on the second attempt")
+	assert.Equal(t, branch, repository.pullRequests[0].Head)
 }
 
 // The label driven annotation is opt-in, so nothing reads the registry unless it
