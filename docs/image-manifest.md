@@ -4,6 +4,10 @@ image-updater が PR を作るとき、kustomization.yaml の `images:` ブロ�
 **managed metadata コメントブロック**を書き込む。マニフェストだけを見れば「このイメージの
 コードはどのリポジトリのどのコミットにあるのか」が分かる状態にするための仕様。
 
+> [!IMPORTANT]
+> この機能は既定で無効。`IMAGE_LABEL_ANNOTATION_ENABLED=true` で有効化する。
+> イメージに label が焼かれていること、およびレジストリの読み取り権限が前提になる。
+
 ## 出力例
 
 ```yaml
@@ -125,9 +129,28 @@ managed metadata ブロックは `images:` 直上の連続コメント領域の�
 
 ブロックの中身が壊れて YAML として読めない場合は警告ログを出して新規生成し直す。
 
-## 無効化
+## インデント
 
-registry config ごとに `imageManifest: false` で書き込みを止められる。未指定は有効。
+ブロック内の YAML のインデントは `IMAGE_MANIFEST_INDENT` で変えられる。既定は `2` で、
+kustomize 自身の出力に合わせている。
+
+指定できるのは `2`〜`9`。YAML emitter がこの範囲外の値を黙って 2 に戻すため、範囲外を
+渡した場合は起動時にエラーにして気づけるようにしてある。
+
+インデントを変えると、次にそのファイルを更新したときブロック全体が書き換わる。読み込みは
+インデントに依存しないので、既存のブロックが読めなくなることはない。
+
+## 有効化と無効化
+
+2 段階ある。
+
+| レイヤ | 設定 | 既定 |
+| --- | --- | --- |
+| プロセス全体 | `IMAGE_LABEL_ANNOTATION_ENABLED` | `false` |
+| ルールごと | rule file の `imageManifest` | `true` |
+
+プロセス全体の設定がマスタースイッチ。無効なら、ルールごとの設定に関わらず書き込まない。
+有効にした上で、特定のルールだけ止めたい場合に `imageManifest: false` を使う。
 
 ```yaml
 - githubRepository: https://github.com/example-org/example-manifests/services/$1/$2/$3/overlays/staging

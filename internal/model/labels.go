@@ -8,9 +8,9 @@ const (
 	LabelRevision = "org.opencontainers.image.revision"
 	LabelCreated  = "org.opencontainers.image.created"
 
-	// Custom labels
-	// Note: this labels are defined by ecr-image-update action
-	// for details see: https://github.com/example-org/example-ci/pull/243
+	// Labels outside the OCI spec, attached by the pipeline that builds the
+	// image. They are all optional: an image without them still gets updated,
+	// only the pull request carries less context.
 	LabelPRNumber   = "org.opencontainers.image.pr.number"
 	LabelPRAuthor   = "org.opencontainers.image.pr.author"
 	LabelPRTitle    = "org.opencontainers.image.pr.title"

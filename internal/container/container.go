@@ -87,8 +87,8 @@ func provideMetadataResolver(awsCfg aws.Config) model.MetadataResolver {
 	})
 }
 
-func provideManifestPatcher() model.ManifestPatcher {
-	return kustomize.NewPatcher()
+func provideManifestPatcher(cfg config.Config) model.ManifestPatcher {
+	return kustomize.NewPatcher(kustomize.WithIndent(cfg.App.ImageManifestIndent))
 }
 
 func provideManifestRepository(cfg config.Config) (model.ManifestRepository, error) {
@@ -122,12 +122,15 @@ func provideEventSource(cfg config.Config, awsCfg aws.Config, decoder model.Even
 }
 
 func provideService(
+	cfg config.Config,
 	rules model.RuleSet,
 	resolver model.MetadataResolver,
 	manifests model.ManifestRepository,
 	patcher model.ManifestPatcher,
 ) (*application.Service, error) {
-	return application.NewService(rules, resolver, manifests, patcher)
+	return application.NewService(rules, resolver, manifests, patcher,
+		application.WithImageLabelAnnotation(cfg.App.ImageLabelAnnotation),
+	)
 }
 
 func provideEventHandler(service *application.Service) model.EventHandler {

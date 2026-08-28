@@ -129,7 +129,12 @@ func (d *document) setNewTag(index int, tag string) error {
 // upsertImageManifest merges manifest into the managed metadata comment block
 // placed above the images key, creating the block when it does not exist yet.
 // User written comments around the block are left untouched.
-func (d *document) upsertImageManifest(manifest model.ImageManifest) error {
+//
+// Args:
+//
+//	manifest: the entry to insert or replace.
+//	indent: spaces per nesting level inside the block.
+func (d *document) upsertImageManifest(manifest model.ImageManifest, indent int) error {
 	regionStart, regionEnd := d.headCommentRange()
 	blockStart, blockEnd, found := findManifestBlock(d.lines, regionStart, regionEnd)
 
@@ -145,15 +150,16 @@ func (d *document) upsertImageManifest(manifest model.ImageManifest) error {
 
 	manifestDocument.Upsert(manifest)
 
-	commentLines, err := model.RenderImageManifestComment(manifestDocument)
+	commentLines, err := model.RenderImageManifestComment(manifestDocument, indent)
 	if err != nil {
 		return err
 	}
 
-	indent := strings.Repeat(" ", d.imagesIndent)
+	// The block sits at the same column as the images key it documents.
+	margin := strings.Repeat(" ", d.imagesIndent)
 	rendered := make([]string, 0, len(commentLines))
 	for _, line := range commentLines {
-		rendered = append(rendered, indent+line)
+		rendered = append(rendered, margin+line)
 	}
 
 	if found {

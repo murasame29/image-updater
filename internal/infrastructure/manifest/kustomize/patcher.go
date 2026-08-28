@@ -22,12 +22,39 @@ import (
 const FileName = "kustomization.yaml"
 
 // Patcher rewrites the images block of a kustomization.yaml.
-type Patcher struct{}
+type Patcher struct {
+	// indent is the indent of the YAML rendered inside the managed metadata
+	// comment block. It does not affect the rest of the file, which is edited
+	// line by line and keeps whatever style it already had.
+	indent int
+}
+
+// Option tunes a Patcher.
+type Option func(*Patcher)
+
+// WithIndent sets the indent of the managed metadata comment block. A value the
+// YAML emitter does not honour is ignored in favour of the default.
+func WithIndent(indent int) Option {
+	return func(p *Patcher) {
+		if model.IsValidImageManifestIndent(indent) {
+			p.indent = indent
+		}
+	}
+}
 
 var _ model.ManifestPatcher = Patcher{}
 
-// NewPatcher builds a patcher.
-func NewPatcher() Patcher { return Patcher{} }
+// NewPatcher builds a patcher indenting the metadata block by two spaces, which
+// is what kustomize itself emits.
+func NewPatcher(opts ...Option) Patcher {
+	patcher := Patcher{indent: model.ImageManifestIndentDefault}
+
+	for _, opt := range opts {
+		opt(&patcher)
+	}
+
+	return patcher
+}
 
 // Patch updates the tag of update.Image inside dir and, when asked for, refreshes
 // the well-known image manifest comment block.
@@ -40,7 +67,7 @@ func NewPatcher() Patcher { return Patcher{} }
 //	nil when the file was rewritten, ErrManifestNotFound when there is no
 //	kustomization.yaml, ErrImageNotManaged when it does not reference the image
 //	and ErrNoDifference when it already carries the new tag.
-func (Patcher) Patch(ctx context.Context, dir string, update model.ImageUpdate) error {
+func (p Patcher) Patch(ctx context.Context, dir string, update model.ImageUpdate) error {
 	path := filepath.Join(dir, FileName)
 
 	info, err := os.Stat(path)
@@ -79,7 +106,7 @@ func (Patcher) Patch(ctx context.Context, dir string, update model.ImageUpdate) 
 	if update.Manifest != nil {
 		// The metadata block is a convenience for humans reading the manifests,
 		// so a failure to render it must not hold back the tag update.
-		if err := doc.upsertImageManifest(*update.Manifest); err != nil {
+		if err := doc.upsertImageManifest(*update.Manifest, p.indent); err != nil {
 			slog.WarnContext(ctx, "failed to write the image manifest metadata",
 				slog.String("error.message", err.Error()),
 			)

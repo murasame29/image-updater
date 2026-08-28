@@ -104,6 +104,17 @@ func (r fakeResolver) Resolve(context.Context, model.ImageReference) (model.Imag
 	return r.metadata, r.err
 }
 
+// countingResolver records how often the registry was asked.
+type countingResolver struct {
+	metadata model.ImageMetadata
+	calls    int
+}
+
+func (r *countingResolver) Resolve(context.Context, model.ImageReference) (model.ImageMetadata, error) {
+	r.calls++
+	return r.metadata, nil
+}
+
 func testRuleSet(t *testing.T) model.RuleSet {
 	t.Helper()
 
@@ -141,22 +152,29 @@ func testMetadata() model.ImageMetadata {
 }
 
 // newService builds the use case over the fakes, returning them for assertions.
-func newService(t *testing.T, resolver model.MetadataResolver) (*Service, *fakeRepository, *fakePatcher) {
+func newService(t *testing.T, resolver model.MetadataResolver, opts ...Option) (*Service, *fakeRepository, *fakePatcher) {
 	t.Helper()
 
 	repository := &fakeRepository{checkout: &fakeCheckout{dir: t.TempDir()}}
 	patcher := &fakePatcher{}
 
-	service, err := NewService(testRuleSet(t), resolver, repository, patcher)
+	service, err := NewService(testRuleSet(t), resolver, repository, patcher, opts...)
 	require.NoError(t, err)
 
 	return service, repository, patcher
 }
 
+// newAnnotatingService builds the use case with the label driven annotation on,
+// which is what most of the assertions below are about.
+func newAnnotatingService(t *testing.T, resolver model.MetadataResolver) (*Service, *fakeRepository, *fakePatcher) {
+	t.Helper()
+	return newService(t, resolver, WithImageLabelAnnotation(true))
+}
+
 func TestService_Handle(t *testing.T) {
 	t.Parallel()
 
-	service, repository, patcher := newService(t, fakeResolver{metadata: testMetadata()})
+	service, repository, patcher := newAnnotatingService(t, fakeResolver{metadata: testMetadata()})
 
 	require.NoError(t, service.Handle(context.Background(), testPushEvent(testTag)))
 
@@ -174,7 +192,7 @@ func TestService_Handle(t *testing.T) {
 	require.Len(t, patcher.updates, 1)
 	assert.Equal(t, testRegistry+"/apps/platform/image-updater", patcher.updates[0].Image)
 	assert.Equal(t, testTag, patcher.updates[0].NewTag)
-	require.NotNil(t, patcher.updates[0].Manifest, "the image manifest is written by default")
+	require.NotNil(t, patcher.updates[0].Manifest, "the annotation is on, so the image manifest is written")
 	assert.Equal(t, "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678", patcher.updates[0].Manifest.GitSHA)
 
 	assert.Equal(t,
@@ -337,7 +355,7 @@ func TestService_HandleClassifiesFailures(t *testing.T) {
 func TestService_HandleContinuesWithoutImageMetadata(t *testing.T) {
 	t.Parallel()
 
-	service, repository, patcher := newService(t, fakeResolver{err: errors.New("registry unreachable")})
+	service, repository, patcher := newAnnotatingService(t, fakeResolver{err: errors.New("registry unreachable")})
 
 	require.NoError(t, service.Handle(context.Background(), testPushEvent(testTag)))
 
@@ -351,10 +369,37 @@ func TestService_HandleContinuesWithoutImageMetadata(t *testing.T) {
 func TestService_HandleWorksWithoutAResolver(t *testing.T) {
 	t.Parallel()
 
-	service, repository, _ := newService(t, nil)
+	service, repository, patcher := newService(t, nil, WithImageLabelAnnotation(true))
 
 	require.NoError(t, service.Handle(context.Background(), testPushEvent(testTag)))
 	assert.Len(t, repository.pullRequests, 1)
+	require.Len(t, patcher.updates, 1)
+	require.NotNil(t, patcher.updates[0].Manifest, "the block is written, it just has nothing to carry")
+	assert.Empty(t, patcher.updates[0].Manifest.GitSHA)
+}
+
+// The label driven annotation is opt-in, so nothing reads the registry unless it
+// was asked for.
+func TestService_HandleWithoutImageLabelAnnotation(t *testing.T) {
+	t.Parallel()
+
+	resolver := &countingResolver{metadata: testMetadata()}
+	service, repository, patcher := newService(t, resolver)
+
+	require.NoError(t, service.Handle(context.Background(), testPushEvent(testTag)))
+
+	assert.Zero(t, resolver.calls, "the registry must not be asked for metadata")
+
+	require.Len(t, patcher.updates, 1)
+	assert.Nil(t, patcher.updates[0].Manifest, "the metadata comment block must not be written")
+	assert.Equal(t, testTag, patcher.updates[0].NewTag, "the tag is still updated")
+
+	require.Len(t, repository.pullRequests, 1)
+	pr := repository.pullRequests[0]
+	assert.Empty(t, pr.Assignees)
+	assert.Empty(t, pr.Reviewers)
+	assert.Equal(t, "[development][Image Updater][platform/image-updater] イメージの更新", pr.Title)
+	assert.Equal(t, "## 📦 Image Update\n\n", pr.Body, "the body carries only the header")
 }
 
 func TestService_HandleSkipsTheImageManifestWhenDisabled(t *testing.T) {
@@ -372,7 +417,9 @@ func TestService_HandleSkipsTheImageManifestWhenDisabled(t *testing.T) {
 	repository := &fakeRepository{checkout: &fakeCheckout{dir: t.TempDir()}}
 	patcher := &fakePatcher{}
 
-	service, err := NewService(rules, fakeResolver{metadata: testMetadata()}, repository, patcher)
+	// The annotation is on globally, so this asserts the rule opting out on its own.
+	service, err := NewService(rules, fakeResolver{metadata: testMetadata()}, repository, patcher,
+		WithImageLabelAnnotation(true))
 	require.NoError(t, err)
 
 	require.NoError(t, service.Handle(context.Background(), testPushEvent(testTag)))

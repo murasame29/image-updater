@@ -181,7 +181,7 @@ func TestDocumentUpsertImageManifest(t *testing.T) {
 
 	doc, err := parse([]byte(kustomizationFixture))
 	require.NoError(t, err)
-	require.NoError(t, doc.upsertImageManifest(testManifest(image, "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678")))
+	require.NoError(t, doc.upsertImageManifest(testManifest(image, "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"), model.ImageManifestIndentDefault))
 
 	got := string(doc.bytes())
 	for _, want := range []string{
@@ -213,12 +213,12 @@ func TestDocumentUpsertImageManifestMergesEntries(t *testing.T) {
 
 	doc, err := parse([]byte(kustomizationFixture))
 	require.NoError(t, err)
-	require.NoError(t, doc.upsertImageManifest(testManifest(image, "1111")))
-	require.NoError(t, doc.upsertImageManifest(testManifest(sidecar, "2222")))
+	require.NoError(t, doc.upsertImageManifest(testManifest(image, "1111"), model.ImageManifestIndentDefault))
+	require.NoError(t, doc.upsertImageManifest(testManifest(sidecar, "2222"), model.ImageManifestIndentDefault))
 
 	doc, err = parse(doc.bytes())
 	require.NoError(t, err)
-	require.NoError(t, doc.upsertImageManifest(testManifest(image, "3333")))
+	require.NoError(t, doc.upsertImageManifest(testManifest(image, "3333"), model.ImageManifestIndentDefault))
 
 	got := string(doc.bytes())
 	assert.Equal(t, 1, strings.Count(got, model.ImageManifestBeginMarker), "only one managed block is allowed:\n%s", got)

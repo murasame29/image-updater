@@ -55,12 +55,14 @@ flowchart LR
 2. **ルールマッチング**: イベントのレジストリホスト・リポジトリパス・タグを設定ファイルの
    ルールと照合し、更新対象の manifest の場所を決める
 3. **メタデータ取得**: OCI Distribution API でイメージの label とサイズを読む。
-   ここで失敗しても更新自体は続行する
+   ここで失敗しても更新自体は続行する（[opt-in](#label-による注釈)）
 4. **リポジトリ clone**: manifest リポジトリを clone してブランチを切る
-5. **manifest 更新**: 対象イメージの `newTag` を書き換え、`images:` の直上に
-   [well-known image manifest](./docs/image-manifest.md) のメタデータコメントを書き込む
+5. **manifest 更新**: 対象イメージの `newTag` を書き換える。label による注釈が有効なら、
+   `images:` の直上に [well-known image manifest](./docs/image-manifest.md) の
+   メタデータコメントも書き込む
 6. **commit & push**: 変更を commit して、そのブランチだけを push する
-7. **PR 作成**: PR を作り、イメージをビルドしたユーザーを assignee と reviewer に設定する
+7. **PR 作成**: PR を作る。label から取れれば、イメージをビルドしたユーザーを
+   assignee と reviewer に設定する
 
 ### 対応状況
 
@@ -118,7 +120,7 @@ Kubernetes で動かす場合、clone 先として書き込み可能な `/tmp` �
 | `env`              | Yes  | 環境名。ブランチ名・commit message・PR タイトルに入る                                      |
 | `allowImageTag`    | No   | 許可するタグ。`regexp:` プレフィックスで正規表現。未指定なら全許可                          |
 | `denyImageTag`     | No   | 拒否するタグのリスト。`regexp:` も使える。allow より優先                                    |
-| `imageManifest`    | No   | [well-known image manifest](./docs/image-manifest.md) を書くか。未指定は `true`             |
+| `imageManifest`    | No   | このルールで [well-known image manifest](./docs/image-manifest.md) を書くか。未指定は `true`。`IMAGE_LABEL_ANNOTATION_ENABLED` が無効なら無視される |
 
 #### 変数とワイルドカード
 
@@ -195,6 +197,29 @@ image_updater_{imageName}_{env}_{imageTag}
 | `apps/shop/web/api`          | `staging`     | `abc1234` | `image_updater_shop_web_api_staging_abc1234`         |
 | `apps/platform/image-updater` | `development` | `def5678`  | `image_updater_platform_image-updater_development_def5678` |
 
+### label による注釈
+
+イメージに焼かれた OCI label を読んで、PR に文脈を足す機能。**既定では無効**で、
+`IMAGE_LABEL_ANNOTATION_ENABLED=true` で有効化する。
+
+有効にすると次が動く。
+
+- PR 本文に commit / branch / author / CI 実行へのリンクが入る
+- `org.opencontainers.image.build.actor` の値を assignee と reviewer に設定する
+- `images:` の直上に [well-known image manifest](./docs/image-manifest.md) の
+  メタデータコメントを書き込む
+
+無効のままなら、レジストリにメタデータを問い合わせない。イメージの読み取り権限も、
+ビルド側で label を付ける仕込みも要らず、PR はタグの変更だけを持つ。
+
+有効にするには以下が前提になる。
+
+- ビルド側が label を付けていること（付け方は
+  [docs/image-manifest.md](./docs/image-manifest.md) を参照）
+- レジストリの読み取り権限があること
+
+label が欠けていても更新自体は動く。取れた分だけが PR に反映される。
+
 ### 環境変数
 
 | 環境変数                 | 型               | 必須 | 既定値 | 説明                                                  |
@@ -207,6 +232,8 @@ image_updater_{imageName}_{env}_{imageTag}
 | `GITHUB_CRT_PATH`        | path             | Yes  | -      | GitHub App の秘密鍵 (PEM) のパス                      |
 | `GITHUB_AUTHOR_EMAIL`    | string           | No   | `{GITHUB_USERNAME}@users.noreply.github.com` | commit author のメールアドレス |
 | `GITHUB_BASE_BRANCH`     | string           | No   | `main` | PR のマージ先ブランチ                                 |
+| `IMAGE_LABEL_ANNOTATION_ENABLED` | bool     | No   | `false` | [label による注釈](#label-による注釈)を有効化する     |
+| `IMAGE_MANIFEST_INDENT`  | int (2-9)        | No   | `2`    | メタデータコメントブロック内の YAML のインデント幅     |
 | `LOG_LEVEL`              | debug/info/warn/error | No | `info` | ログレベル                                            |
 | `INTERVAL`               | duration         | No   | `10s`  | ポーリングの間隔。long polling が効くので `0s` でよい  |
 | `CONCURRENCY`            | int              | No   | `10`   | 同時に処理するイベント数                              |

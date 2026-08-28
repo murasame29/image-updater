@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v11"
+
+	"github.com/murasame29/image-updater/internal/model"
 )
 
 // LogLevel is the configured verbosity.
@@ -64,6 +66,17 @@ type App struct {
 	ShutdownTimeout time.Duration `env:"SHUTDOWN_TIMEOUT" envDefault:"30s"`
 	// WorkDir is where repositories are cloned. Empty means the system temp dir.
 	WorkDir string `env:"WORK_DIR"`
+	// ImageLabelAnnotation turns the label driven annotation on: the pull request
+	// description, the assignee and reviewer, and the well-known image manifest
+	// comment block are all filled from the labels baked into the pushed image.
+	//
+	// Off by default. It needs the build pipeline to attach the labels and read
+	// access to the registry, and neither can be assumed.
+	ImageLabelAnnotation bool `env:"IMAGE_LABEL_ANNOTATION_ENABLED" envDefault:"false"`
+	// ImageManifestIndent is the indent of the YAML inside the managed metadata
+	// comment block. It only affects that block: the rest of the manifest is
+	// edited line by line and keeps the style it already had.
+	ImageManifestIndent int `env:"IMAGE_MANIFEST_INDENT" envDefault:"2"`
 }
 
 // GitHub holds the credentials of the GitHub App the updater acts as.
@@ -134,6 +147,13 @@ func (c Config) validate() error {
 
 	if len(missing) > 0 {
 		return fmt.Errorf("these variables are required but empty: %s", strings.Join(missing, ", "))
+	}
+
+	// The YAML emitter silently falls back to two spaces outside this range, so
+	// an unusable value is reported instead of quietly ignored.
+	if !model.IsValidImageManifestIndent(c.App.ImageManifestIndent) {
+		return fmt.Errorf("IMAGE_MANIFEST_INDENT has to be between %d and %d, got %d",
+			model.ImageManifestIndentMin, model.ImageManifestIndentMax, c.App.ImageManifestIndent)
 	}
 
 	return nil

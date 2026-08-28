@@ -24,6 +24,24 @@ const (
 	commentPrefix = "#"
 )
 
+// The indent of the YAML rendered inside the managed comment block.
+//
+// The bounds are the ones the YAML emitter honours: it silently falls back to
+// two spaces outside them, so a value out of range is normalised up front rather
+// than quietly ignored.
+const (
+	// ImageManifestIndentDefault matches what kustomize itself emits.
+	ImageManifestIndentDefault = 2
+	ImageManifestIndentMin     = 2
+	ImageManifestIndentMax     = 9
+)
+
+// IsValidImageManifestIndent reports whether indent is a value the YAML emitter
+// actually honours.
+func IsValidImageManifestIndent(indent int) bool {
+	return indent >= ImageManifestIndentMin && indent <= ImageManifestIndentMax
+}
+
 // ImageManifest is the well-known metadata of a single container image.
 // Every field is derived from the OCI / build labels baked into the image, so
 // the manifest alone tells where the code, the commit and the CI run live.
@@ -98,16 +116,27 @@ func (d *ImageManifestDocument) Upsert(manifest ImageManifest) {
 // RenderImageManifestComment renders the document as YAML comment lines,
 // markers included. Lines carry the leading "#" but no indentation.
 //
+// Args:
+//
+//	document: the manifest document to render.
+//	indent: spaces per nesting level. A value outside the range the YAML
+//	  emitter honours falls back to ImageManifestIndentDefault, so the zero
+//	  value renders the same as it always did.
+//
 // Returns:
 //
 //	The comment lines, or an error when the document cannot be marshalled.
-func RenderImageManifestComment(document ImageManifestDocument) ([]string, error) {
+func RenderImageManifestComment(document ImageManifestDocument, indent int) ([]string, error) {
 	document.SchemaVersion = ImageManifestSchemaVersion
 	document.Generator = ImageManifestGenerator
 
+	if !IsValidImageManifestIndent(indent) {
+		indent = ImageManifestIndentDefault
+	}
+
 	var buf bytes.Buffer
 	encoder := yaml.NewEncoder(&buf)
-	encoder.SetIndent(2)
+	encoder.SetIndent(indent)
 	if err := encoder.Encode(document); err != nil {
 		return nil, fmt.Errorf("failed to marshal image manifest: %w", err)
 	}

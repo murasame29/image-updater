@@ -36,19 +36,38 @@ type Service struct {
 	resolver  model.MetadataResolver
 	manifests model.ManifestRepository
 	patcher   model.ManifestPatcher
+
+	// annotateFromLabels turns the label driven annotation on. It is off by
+	// default because it needs the build pipeline to attach the labels and read
+	// access to the registry, neither of which can be assumed.
+	annotateFromLabels bool
+}
+
+// Option tunes a Service.
+type Option func(*Service)
+
+// WithImageLabelAnnotation turns the label driven annotation on or off.
+//
+// When on, the labels baked into the pushed image are read and used to fill the
+// pull request description, to pick the assignee and reviewer, and to write the
+// well-known image manifest comment block. When off, the registry is never asked
+// for metadata and the pull request carries only the tag change.
+func WithImageLabelAnnotation(enabled bool) Option {
+	return func(s *Service) { s.annotateFromLabels = enabled }
 }
 
 var _ model.EventHandler = (*Service)(nil)
 
 // NewService wires the use case to its ports.
 //
-// resolver may be nil, in which case the pull request is opened without the
-// metadata baked into the image.
+// resolver may be nil, which has the same effect as leaving the label driven
+// annotation off.
 func NewService(
 	rules model.RuleSet,
 	resolver model.MetadataResolver,
 	manifests model.ManifestRepository,
 	patcher model.ManifestPatcher,
+	opts ...Option,
 ) (*Service, error) {
 	switch {
 	case rules.Len() == 0:
@@ -59,7 +78,13 @@ func NewService(
 		return nil, errors.New("updater: manifest patcher is nil")
 	}
 
-	return &Service{rules: rules, resolver: resolver, manifests: manifests, patcher: patcher}, nil
+	service := &Service{rules: rules, resolver: resolver, manifests: manifests, patcher: patcher}
+
+	for _, opt := range opts {
+		opt(service)
+	}
+
+	return service, nil
 }
 
 // Handle updates the manifests that track the pushed image.
@@ -113,11 +138,13 @@ func (s *Service) plan(event model.ImagePushEvent) (plan, error) {
 	}
 
 	return plan{
-		event:               event,
-		location:            location,
-		env:                 matched.Env(),
-		branch:              branch,
-		writesImageManifest: matched.WritesImageManifest(),
+		event:    event,
+		location: location,
+		env:      matched.Env(),
+		branch:   branch,
+		// The comment block is metadata read off the image, so it needs the
+		// annotation turned on. The rule can still opt out of it on its own.
+		writesImageManifest: s.annotateFromLabels && matched.WritesImageManifest(),
 	}, nil
 }
 
@@ -182,7 +209,7 @@ func (s *Service) apply(ctx context.Context, target plan) error {
 // They only decorate the pull request, so a registry that cannot be read costs
 // metadata rather than the update itself.
 func (s *Service) imageLabels(ctx context.Context, event model.ImagePushEvent) model.ImageLabels {
-	if s.resolver == nil {
+	if !s.annotateFromLabels || s.resolver == nil {
 		return model.ImageLabels{}
 	}
 

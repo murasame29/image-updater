@@ -276,6 +276,67 @@ func TestPatcher_PatchReportsAMissingFile(t *testing.T) {
 	require.ErrorIs(t, err, model.ErrManifestNotFound)
 }
 
+func TestPatcher_PatchIndentsTheMetadataBlock(t *testing.T) {
+	t.Parallel()
+
+	manifest := testManifest(testImage, "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678")
+
+	tests := []struct {
+		name   string
+		opts   []Option
+		nested string
+	}{
+		{
+			name:   "既定は 2 スペース",
+			nested: "#   - image: " + testImage + "\n",
+		},
+		{
+			name:   "4 スペースに変更できる",
+			opts:   []Option{WithIndent(4)},
+			nested: "#     - image: " + testImage + "\n",
+		},
+		{
+			// YAML emitter が honour しない値は既定に落とす。
+			name:   "使えない値は既定に落ちる",
+			opts:   []Option{WithIndent(1)},
+			nested: "#   - image: " + testImage + "\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			path := filepath.Join(dir, FileName)
+			require.NoError(t, os.WriteFile(path, []byte(kustomizationFixture), 0o644))
+
+			err := NewPatcher(tt.opts...).Patch(context.Background(), dir, model.ImageUpdate{
+				Image:    testImage,
+				NewTag:   "alice.1111111111111111111111111111111111111111",
+				Manifest: &manifest,
+			})
+			require.NoError(t, err)
+
+			after, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Contains(t, string(after), tt.nested)
+
+			// Whatever the indent, the block has to read back.
+			doc, err := parse(after)
+			require.NoError(t, err)
+			start, end := doc.headCommentRange()
+			blockStart, blockEnd, found := findManifestBlock(doc.lines, start, end)
+			require.True(t, found)
+
+			parsed, err := model.ParseImageManifestComment(doc.lines[blockStart:blockEnd])
+			require.NoError(t, err)
+			require.Len(t, parsed.Images, 1)
+			assert.Equal(t, testImage, parsed.Images[0].Image)
+		})
+	}
+}
+
 func TestPatcher_PatchKeepsTheFileMode(t *testing.T) {
 	t.Parallel()
 

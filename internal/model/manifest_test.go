@@ -52,7 +52,7 @@ func TestImageManifestCommentRoundTrip(t *testing.T) {
 	document.Upsert(ImageManifest{Image: "registry/b", GitSHA: "2222"})
 	document.Upsert(ImageManifest{Image: "registry/a", GitSHA: "1111"})
 
-	lines, err := RenderImageManifestComment(document)
+	lines, err := RenderImageManifestComment(document, ImageManifestIndentDefault)
 	require.NoError(t, err)
 
 	assert.True(t, IsImageManifestBegin(lines[0]))
@@ -81,7 +81,7 @@ func TestRenderImageManifestCommentOmitsEmptyFields(t *testing.T) {
 	var document ImageManifestDocument
 	document.Upsert(ImageManifest{Image: "registry/app"})
 
-	lines, err := RenderImageManifestComment(document)
+	lines, err := RenderImageManifestComment(document, ImageManifestIndentDefault)
 	require.NoError(t, err)
 
 	rendered := strings.Join(lines, "\n")
@@ -218,7 +218,7 @@ func TestImageManifestExtraRoundTrip(t *testing.T) {
 	var document ImageManifestDocument
 	document.Upsert(manifest)
 
-	lines, err := RenderImageManifestComment(document)
+	lines, err := RenderImageManifestComment(document, ImageManifestIndentDefault)
 	require.NoError(t, err)
 
 	rendered := strings.Join(lines, "\n")
@@ -227,7 +227,7 @@ func TestImageManifestExtraRoundTrip(t *testing.T) {
 	assert.Contains(t, rendered, "#       runbook_url: https://example.com/runbook\n")
 
 	// キーの並びは決定的であること
-	again, err := RenderImageManifestComment(document)
+	again, err := RenderImageManifestComment(document, ImageManifestIndentDefault)
 	require.NoError(t, err)
 	assert.Equal(t, lines, again)
 

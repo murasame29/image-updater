@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/murasame29/image-updater/internal/model"
 )
 
 // required is the environment a healthy deployment provides.
@@ -43,6 +45,8 @@ func TestLoad(t *testing.T) {
 	assert.Equal(t, 10*time.Second, cfg.App.PollInterval)
 	assert.Equal(t, 10, cfg.App.Concurrency)
 	assert.Equal(t, 30*time.Second, cfg.App.ShutdownTimeout)
+	assert.False(t, cfg.App.ImageLabelAnnotation, "label 由来の注釈は opt-in")
+	assert.Equal(t, model.ImageManifestIndentDefault, cfg.App.ImageManifestIndent)
 	assert.Equal(t, "main", cfg.GitHub.BaseBranch)
 	assert.Equal(t, int32(20), cfg.AWS.VisibilityTimeout)
 	assert.Equal(t, int32(20), cfg.AWS.WaitTime)
@@ -62,6 +66,66 @@ func TestLoadRejectsAMissingRequiredValue(t *testing.T) {
 
 			_, err := Load()
 			require.Error(t, err, "%s has to be required", missing)
+		})
+	}
+}
+
+func TestLoadReadsTheImageLabelAnnotationFlag(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "true で有効", value: "true", want: true},
+		{name: "false で無効", value: "false", want: false},
+		{name: "1 で有効", value: "1", want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setEnv(t, required)
+			t.Setenv("IMAGE_LABEL_ANNOTATION_ENABLED", tt.value)
+
+			cfg, err := Load()
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.App.ImageLabelAnnotation)
+		})
+	}
+}
+
+func TestLoadValidatesTheImageManifestIndent(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		want    int
+		wantErr bool
+	}{
+		{name: "既定値", value: "", want: model.ImageManifestIndentDefault},
+		{name: "下限", value: "2", want: 2},
+		{name: "上限", value: "9", want: 9},
+		{name: "4 スペース", value: "4", want: 4},
+		// YAML emitter が黙って 2 に戻す値は、起動時に落として気づけるようにする。
+		{name: "下限未満は拒否", value: "1", wantErr: true},
+		{name: "上限超過は拒否", value: "10", wantErr: true},
+		{name: "0 は拒否", value: "0", wantErr: true},
+		{name: "負値は拒否", value: "-2", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setEnv(t, required)
+			if tt.value != "" {
+				t.Setenv("IMAGE_MANIFEST_INDENT", tt.value)
+			}
+
+			cfg, err := Load()
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "IMAGE_MANIFEST_INDENT")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.App.ImageManifestIndent)
 		})
 	}
 }
