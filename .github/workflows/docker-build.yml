@@ -1,0 +1,33 @@
+name: Docker build
+
+on:
+  pull_request:
+    types: [synchronize, opened]
+    paths:
+      - '**/*.go'
+      - '**/go.mod'
+      - '**/go.sum'
+      - 'Dockerfile'
+      - '.github/workflows/docker-build.yml'
+  push:
+    branches: [master]
+
+jobs:
+  # イメージのビルドが通ることだけを確認する。push はしないので、
+  # レジストリの認証情報は要らない。
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

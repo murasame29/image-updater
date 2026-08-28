@@ -1,7 +1,0 @@
-- registryURI: /*/$1/$2/$3
-  gitHubRepository: github.com/murasame29/image-registry-push-notify/services/$1/$2/$3/overlays/$env
-  allowImageTag: regexp:^[0-9a-f]{7,40}$
-  denyImageTag: latest
-  region: ap-northeast-1
-  env:
-    "211125717884": dev

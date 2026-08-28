@@ -1,0 +1,31 @@
+name: Go lint
+
+on:
+  pull_request:
+    types: [synchronize, opened]
+    paths:
+      - '**/*.go'
+      - '**/go.mod'
+      - '.golangci.yml'
+      - '.github/workflows/go-lint.yml'
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # golangci-lint は go.mod の go ディレクティブより新しい Go でビルドされた
+      # リリースが必要 (古いと "language version too low" で失敗する)。
+      # go1.27 サポートは v2.13.0 で入った。
+      # golangci-lint-action は v2 用の v8 系を使う (v6 は v1 系専用)。
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8
+        with:
+          version: v2.13.1
