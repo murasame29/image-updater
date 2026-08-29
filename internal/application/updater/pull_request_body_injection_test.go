@@ -32,15 +32,15 @@ func TestFormatPullRequestBodyResistsLabelInjection(t *testing.T) {
 	body := FormatPullRequestBody(labels)
 
 	t.Run("独立した見出しを生やせない", func(t *testing.T) {
-		// 注入された文字列はアプリ自身の見出しの中に、リテラルとして収まる。
-		// 新しい行を作れないので、独立した見出しにはならない。
+		// Injected text remains literal within the application's own heading.
+		// It cannot become an independent heading because it cannot create a new line.
 		var headings []string
 		for _, line := range strings.Split(body, "\n") {
 			if strings.HasPrefix(line, "#") {
 				headings = append(headings, line)
 			}
 		}
-		// Links セクションは PRNumber も BuildURL も落ちたので出ない。
+		// The Links section is omitted because both PRNumber and BuildURL were rejected.
 		require.Len(t, headings, 2, "見出しはアプリが出すものだけ: %v", headings)
 
 		assert.Contains(t, headings[0], `\#\#`, "注入された ## はエスケープされている")
@@ -48,16 +48,16 @@ func TestFormatPullRequestBodyResistsLabelInjection(t *testing.T) {
 	})
 
 	t.Run("メンションを注入できない", func(t *testing.T) {
-		// PRAuthor はハンドルとして不正なので落ち、Author 行そのものが出ない。
+		// PRAuthor is rejected as an invalid handle, so the Author row is omitted.
 		assert.Empty(t, labels.PRAuthor)
 		assert.NotContains(t, body, "**Author**")
-		// タイトルに紛れ込んだ @ はエスケープされ、通知が飛ばない。
+		// The @ injected into the title is escaped so it cannot send a notification.
 		assert.NotContains(t, body, "by @security")
 		assert.Contains(t, body, `\@security`)
 	})
 
 	t.Run("HTML コメントで本文を隠せない", func(t *testing.T) {
-		// `<` がエスケープされているので raw HTML として解釈されない。
+		// Escaping `<` prevents the value from being interpreted as raw HTML.
 		assert.NotContains(t, body, " <!--")
 		assert.Contains(t, body, `\<!--`)
 		assert.Contains(t, body, "### Changes", "後続のセクションが生きている")
@@ -79,7 +79,7 @@ func TestFormatPullRequestBodyResistsLabelInjection(t *testing.T) {
 	})
 }
 
-// 注入対策が普通の値を壊していないこと。
+// Injection defenses must not alter ordinary values.
 func TestFormatPullRequestBodyKeepsHonestValues(t *testing.T) {
 	t.Parallel()
 
@@ -144,7 +144,7 @@ func TestEscapeMarkdown(t *testing.T) {
 func TestFormatPullRequestBodyDropsAMangledSourceURL(t *testing.T) {
 	t.Parallel()
 
-	// Source が落ちれば、それを土台に組み立てるリンクも出てはいけない。
+	// Links derived from Source must also be omitted when Source is rejected.
 	labels := model.NewImageLabels(map[string]string{
 		model.LabelSource:   "not a url",
 		model.LabelRevision: "a1b2c3d4",

@@ -61,7 +61,7 @@ func TestImageManifestCommentRoundTrip(t *testing.T) {
 		assert.True(t, strings.HasPrefix(line, "#"), "every rendered line must be a comment: %q", line)
 	}
 
-	// インデント付きで読み戻せること
+	// Indented comments must also round-trip.
 	indented := make([]string, 0, len(lines))
 	for _, line := range lines {
 		indented = append(indented, "  "+line)
@@ -226,7 +226,7 @@ func TestImageManifestExtraRoundTrip(t *testing.T) {
 	assert.Contains(t, rendered, "#       team: platform\n")
 	assert.Contains(t, rendered, "#       runbook_url: https://example.com/runbook\n")
 
-	// キーの並びは決定的であること
+	// Key ordering must be deterministic.
 	again, err := RenderImageManifestComment(document, ImageManifestIndentDefault)
 	require.NoError(t, err)
 	assert.Equal(t, lines, again)

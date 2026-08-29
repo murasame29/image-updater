@@ -304,19 +304,60 @@ func TestMatchedRule_Location(t *testing.T) {
 	}
 }
 
-func TestMatchedRule_LocationRejectsEscapingPaths(t *testing.T) {
+func TestMatchedRule_LocationPreservesRecursiveWildcard(t *testing.T) {
 	t.Parallel()
 
 	rules, err := NewRuleSet([]Rule{{
 		ImagePattern: testRegistry + "/apps/$1",
-		ManifestURL:  "https://github.com/example-org/example-manifests/$1/../../../etc",
+		ManifestURL:  "https://github.com/example-org/example-manifests/services/$1/overlays/**",
 	}})
 	require.NoError(t, err)
 
 	matched, err := rules.Match(testEvent("apps/app", "abcdef1"))
 	require.NoError(t, err)
+	location, err := matched.Location()
+	require.NoError(t, err)
+	assert.Equal(t, "services/app/overlays/**", location.Dir)
+}
 
+func TestNewRuleSetRejectsInvalidManifestWildcards(t *testing.T) {
+	t.Parallel()
+
+	for _, manifestURL := range []string{
+		"https://github.com/example-org/example-manifests/services/*/production",
+		"https://github.com/example-org/example-manifests/services/app**/production",
+		"https://github.com/example-org/example-manifests/services/**/overlays/**",
+	} {
+		_, err := NewRuleSet([]Rule{{
+			ImagePattern: testRegistry + "/apps/$1",
+			ManifestURL:  manifestURL,
+		}})
+		require.ErrorIs(t, err, ErrIncompleteRule, manifestURL)
+	}
+}
+
+func TestMatchedRule_LocationRejectsCapturedWildcards(t *testing.T) {
+	t.Parallel()
+
+	rules, err := NewRuleSet([]Rule{{
+		ImagePattern: testRegistry + "/apps/$1",
+		ManifestURL:  "https://github.com/example-org/example-manifests/services/$1",
+	}})
+	require.NoError(t, err)
+
+	matched, err := rules.Match(testEvent("apps/**", "abcdef1"))
+	require.NoError(t, err)
 	_, err = matched.Location()
+	require.ErrorIs(t, err, ErrIncompleteRule)
+}
+
+func TestMatchedRule_LocationRejectsEscapingPaths(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewRuleSet([]Rule{{
+		ImagePattern: testRegistry + "/apps/$1",
+		ManifestURL:  "https://github.com/example-org/example-manifests/$1/../../../etc",
+	}})
 	require.ErrorIs(t, err, ErrIncompleteRule)
 }
 

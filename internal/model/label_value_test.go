@@ -44,7 +44,7 @@ func TestSanitizeLabelTextTruncates(t *testing.T) {
 	assert.True(t, strings.HasPrefix(got, "あ"))
 }
 
-// Markdown を乗っ取る値が、構造として無害化されていること。
+// Values that try to take over Markdown must be structurally neutralized.
 func TestSanitizeLabelTextStopsBlockInjection(t *testing.T) {
 	t.Parallel()
 
@@ -172,7 +172,7 @@ func TestSanitizeLabelToken(t *testing.T) {
 	}
 }
 
-// NewImageLabels が唯一の入口なので、ここで全フィールドが正規化されること。
+// NewImageLabels is the sole entry point, so it normalizes every field.
 func TestNewImageLabelsSanitizesEveryField(t *testing.T) {
 	t.Parallel()
 
@@ -209,11 +209,11 @@ func TestNewImageLabelsSanitizesEveryField(t *testing.T) {
 	assert.NotContains(t, labels.Extra, "onlyws")
 }
 
-// 正規化を通れば、メタデータブロックにマーカーを注入できないこと。
+// Normalization must prevent marker injection into the metadata block.
 func TestRenderImageManifestCommentRejectsAnInjectedMarker(t *testing.T) {
 	t.Parallel()
 
-	// 正規化を素通りした値を直接組み立てて、二重防御が効くことを見る。
+	// Construct a value directly, bypassing normalization, to verify defense in depth.
 	var document ImageManifestDocument
 	document.Upsert(ImageManifest{
 		Image: "registry/app",
@@ -225,7 +225,7 @@ func TestRenderImageManifestCommentRejectsAnInjectedMarker(t *testing.T) {
 	assert.Contains(t, err.Error(), "block marker")
 }
 
-// 正規化を通した場合はそもそも改行が残らないので、描画は成功する。
+// Rendering succeeds after normalization because no newlines remain.
 func TestRenderImageManifestCommentAfterSanitizing(t *testing.T) {
 	t.Parallel()
 
@@ -247,7 +247,8 @@ func TestRenderImageManifestCommentAfterSanitizing(t *testing.T) {
 	}
 	assert.Equal(t, 1, markers, "END マーカーはブロックの終端だけ")
 
-	// マーカー文字列自体は 1 行に潰れた値の中に残るが、行として成立しないので害はない。
+	// The marker text remains inside the collapsed one-line value, but it is
+	// harmless because it cannot form a line on its own.
 	parsed, err := ParseImageManifestComment(lines)
 	require.NoError(t, err)
 	require.Len(t, parsed.Images, 1)

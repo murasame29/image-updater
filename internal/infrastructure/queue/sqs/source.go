@@ -32,11 +32,21 @@ const (
 
 	// deleteTimeout caps the acknowledgement of a processed message.
 	deleteTimeout = 10 * time.Second
+
+	// maxVisibilityRenewCallTimeout keeps a stalled renewal from consuming the
+	// remaining lease margin before a retry can start.
+	maxVisibilityRenewCallTimeout = 5 * time.Second
+
+	// SQS measures its visibility maximum from ReceiveMessage, not from the most
+	// recent renewal. Keep one second of margin for network and server time.
+	maxMessageVisibilityLifetime = 12 * time.Hour
+	visibilityLifetimeMargin     = time.Second
 )
 
 // API is the subset of the SQS client the source uses.
 type API interface {
 	ReceiveMessage(ctx context.Context, params *sqs.ReceiveMessageInput, optFns ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error)
+	ChangeMessageVisibility(ctx context.Context, params *sqs.ChangeMessageVisibilityInput, optFns ...func(*sqs.Options)) (*sqs.ChangeMessageVisibilityOutput, error)
 	DeleteMessage(ctx context.Context, params *sqs.DeleteMessageInput, optFns ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error)
 }
 
@@ -93,8 +103,22 @@ func NewSource(api API, decoder model.EventDecoder, cfg Config) (*Source, error)
 	if cfg.QueueURL == "" {
 		return nil, errors.New("sqs: queue URL is empty")
 	}
+	if cfg.MaxMessages < 0 || cfg.VisibilityTimeout < 0 || cfg.WaitTime < 0 || cfg.Concurrency < 0 || cfg.PollInterval < 0 {
+		return nil, errors.New("sqs: numeric configuration must not be negative")
+	}
 
 	cfg.applyDefaults()
+
+	switch {
+	case cfg.MaxMessages > 10:
+		return nil, fmt.Errorf("sqs: max messages must be between 1 and 10, got %d", cfg.MaxMessages)
+	case cfg.VisibilityTimeout > 43200:
+		return nil, fmt.Errorf("sqs: visibility timeout must be at most 43200 seconds, got %d", cfg.VisibilityTimeout)
+	case cfg.WaitTime > 20:
+		return nil, fmt.Errorf("sqs: wait time must be at most 20 seconds, got %d", cfg.WaitTime)
+	case cfg.Concurrency > 10:
+		return nil, fmt.Errorf("sqs: concurrency must be between 1 and 10, got %d", cfg.Concurrency)
+	}
 
 	return &Source{api: api, decoder: decoder, cfg: cfg}, nil
 }
@@ -146,9 +170,13 @@ func (s *Source) Run(ctx context.Context, handler model.EventHandler) error {
 }
 
 func (s *Source) receive(ctx context.Context) ([]types.Message, error) {
+	// A visibility lease starts when SQS returns the batch, not when a handler
+	// goroutine eventually starts. Never receive more work than can begin now.
+	maxMessages := min(s.cfg.MaxMessages, int32(s.cfg.Concurrency))
+
 	output, err := s.api.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
 		QueueUrl:            &s.cfg.QueueURL,
-		MaxNumberOfMessages: s.cfg.MaxMessages,
+		MaxNumberOfMessages: maxMessages,
 		VisibilityTimeout:   s.cfg.VisibilityTimeout,
 		WaitTimeSeconds:     s.cfg.WaitTime,
 	})
@@ -182,6 +210,9 @@ func (s *Source) process(ctx context.Context, handler model.EventHandler, messag
 	started := time.Now()
 	messageID := aws.ToString(message.MessageId)
 	receiptHandle := aws.ToString(message.ReceiptHandle)
+
+	stopHeartbeat := s.startVisibilityHeartbeat(ctx, messageID, receiptHandle)
+	defer stopHeartbeat()
 
 	event, err := s.decoder.Decode([]byte(aws.ToString(message.Body)))
 	if err != nil {
@@ -229,6 +260,95 @@ func (s *Source) process(ctx context.Context, handler model.EventHandler, messag
 		slog.String("messaging.message.id", messageID),
 		slog.Float64("duration_ms", float64(time.Since(started).Microseconds())/1000),
 	)
+}
+
+// startVisibilityHeartbeat keeps a received message hidden while its handler is
+// active. The returned stop function owns and joins the heartbeat goroutine.
+func (s *Source) startVisibilityHeartbeat(ctx context.Context, messageID, receiptHandle string) func() {
+	if receiptHandle == "" {
+		return func() {}
+	}
+
+	// Keep the lease alive through cancellation-independent acknowledgement.
+	// The explicit stop function remains the owner of this goroutine.
+	heartbeatCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.renewVisibility(heartbeatCtx, messageID, receiptHandle)
+	}()
+
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
+func (s *Source) renewVisibility(ctx context.Context, messageID, receiptHandle string) {
+	configuredLease := time.Duration(s.cfg.VisibilityTimeout) * time.Second
+	regularDelay := configuredLease / 2
+	retryDelay := min(time.Second, regularDelay/4)
+	startedAt := time.Now()
+	leaseDeadline := startedAt.Add(configuredLease)
+
+	timer := time.NewTimer(regularDelay)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+
+		now := time.Now()
+		remainingLifetime := maxMessageVisibilityLifetime - now.Sub(startedAt) - visibilityLifetimeMargin
+		renewalLease := min(configuredLease, remainingLifetime.Truncate(time.Second))
+		if renewalLease < time.Second {
+			slog.WarnContext(ctx, "message visibility reached the SQS lifetime limit",
+				slog.String("messaging.message.id", messageID),
+			)
+			return
+		}
+
+		remainingLease := time.Until(leaseDeadline)
+		callTimeout := min(maxVisibilityRenewCallTimeout, remainingLease/2)
+		if callTimeout <= 0 {
+			callTimeout = retryDelay
+		}
+		callCtx, cancel := context.WithTimeout(ctx, callTimeout)
+		_, err := s.api.ChangeMessageVisibility(callCtx, &sqs.ChangeMessageVisibilityInput{
+			QueueUrl:          &s.cfg.QueueURL,
+			ReceiptHandle:     &receiptHandle,
+			VisibilityTimeout: int32(renewalLease / time.Second),
+		})
+		cancel()
+
+		if ctx.Err() != nil {
+			return
+		}
+		if err == nil {
+			leaseDeadline = time.Now().Add(renewalLease)
+			timer.Reset(renewalLease / 2)
+			continue
+		}
+
+		slog.ErrorContext(ctx, "failed to renew message visibility",
+			slog.String("messaging.message.id", messageID),
+			slog.String("error.type", fmt.Sprintf("%T", err)),
+			slog.String("error.message", err.Error()),
+		)
+
+		remainingLease = time.Until(leaseDeadline)
+		delay := retryDelay
+		if remainingLease > 0 {
+			delay = min(delay, remainingLease/2)
+		}
+		if delay <= 0 {
+			delay = retryDelay
+		}
+		timer.Reset(delay)
+	}
 }
 
 // acknowledge deletes a message that must not come back.

@@ -8,23 +8,26 @@ package updater
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/murasame29/image-updater/internal/model"
 )
 
 const (
-	// branchFormat names the branch an update is pushed on:
-	// image_updater_{image}_{env}_{tag}
-	branchFormat = "image_updater_%s_%s_%s"
+	// branchFormat names the branch an update is pushed on. The suffix is a
+	// stable hash of the complete source and manifest location, so repositories
+	// with the same human-readable tail cannot collapse onto one branch.
+	branchFormat = "image_updater_%s_%s_%s_%x"
 
-	// titleFormat and commitFormat are the wording the team greps for.
-	titleFormat  = "[%s][Image Updater][%s] イメージの更新"
-	commitFormat = "[%s][image-committer][%s] イメージの更新"
+	// legacyBranchFormat is checked for open pull requests created before branch
+	// identities gained a hash. It is never used for a new push.
+	legacyBranchFormat = "image_updater_%s_%s_%s"
 
 	// invalidBranchCharacters are the characters git refuses in a ref name.
 	invalidBranchCharacters = " \t~^:?*[\\\x7f"
@@ -32,10 +35,12 @@ const (
 
 // Service applies image push events to the deployment manifests.
 type Service struct {
-	rules     model.RuleSet
-	resolver  model.MetadataResolver
-	manifests model.ManifestRepository
-	patcher   model.ManifestPatcher
+	rules       model.RuleSet
+	resolver    model.MetadataResolver
+	manifests   model.ManifestRepository
+	directories model.ManifestDirectoryResolver
+	patcher     model.ManifestPatcher
+	messages    *MessageRenderer
 
 	// annotateFromLabels turns the label driven annotation on. It is off by
 	// default because it needs the build pipeline to attach the labels and read
@@ -66,7 +71,9 @@ func NewService(
 	rules model.RuleSet,
 	resolver model.MetadataResolver,
 	manifests model.ManifestRepository,
+	directories model.ManifestDirectoryResolver,
 	patcher model.ManifestPatcher,
+	messages *MessageRenderer,
 	opts ...Option,
 ) (*Service, error) {
 	switch {
@@ -74,11 +81,22 @@ func NewService(
 		return nil, errors.New("updater: the rule set is empty")
 	case manifests == nil:
 		return nil, errors.New("updater: manifest repository is nil")
+	case directories == nil:
+		return nil, errors.New("updater: manifest directory resolver is nil")
 	case patcher == nil:
 		return nil, errors.New("updater: manifest patcher is nil")
+	case messages == nil:
+		return nil, errors.New("updater: message renderer is nil")
 	}
 
-	service := &Service{rules: rules, resolver: resolver, manifests: manifests, patcher: patcher}
+	service := &Service{
+		rules:       rules,
+		resolver:    resolver,
+		manifests:   manifests,
+		directories: directories,
+		patcher:     patcher,
+		messages:    messages,
+	}
 
 	for _, opt := range opts {
 		opt(service)
@@ -107,54 +125,195 @@ func (s *Service) Handle(ctx context.Context, event model.ImagePushEvent) error 
 	return s.apply(ctx, target)
 }
 
-// plan is everything derived from an event before a single remote call is made.
-type plan struct {
-	event               model.ImagePushEvent
+// eventPlan contains every manifest repository affected by one image push.
+type eventPlan struct {
+	event        model.ImagePushEvent
+	repositories []repositoryPlan
+}
+
+// repositoryPlan is the transaction boundary for one manifest repository.
+// Every target is patched in one checkout and committed in one pull request.
+type repositoryPlan struct {
+	event    model.ImagePushEvent
+	location model.ManifestLocation
+	targets  []manifestTarget
+	env      string
+	branch   string
+}
+
+// manifestTarget is one directory selected by a matched rule.
+type manifestTarget struct {
 	location            model.ManifestLocation
 	env                 string
-	branch              string
 	writesImageManifest bool
 }
 
-// plan matches the event against the rules and works out what to change.
-func (s *Service) plan(event model.ImagePushEvent) (plan, error) {
-	matched, err := s.rules.Match(event)
+// plan matches the event against the rules and works out every change before a
+// remote call is made.
+func (s *Service) plan(event model.ImagePushEvent) (eventPlan, error) {
+	matchedRules, err := s.rules.Matches(event)
 	if err != nil {
-		return plan{}, err
+		return eventPlan{}, err
 	}
 
-	if err := matched.ValidateTag(); err != nil {
-		return plan{}, err
+	planned := eventPlan{event: event}
+	byRepository := make(map[string]int, len(matchedRules))
+	var firstTagError error
+
+	for _, matched := range matchedRules {
+		if err := matched.ValidateTag(); err != nil {
+			if firstTagError == nil {
+				firstTagError = err
+			}
+			continue
+		}
+
+		location, err := matched.Location()
+		if err != nil {
+			return eventPlan{}, err
+		}
+
+		target := manifestTarget{
+			location: location,
+			env:      matched.Env(),
+			// The comment block is metadata read off the image, so it needs
+			// annotation enabled globally. A rule can still opt out on its own.
+			writesImageManifest: s.annotateFromLabels && matched.WritesImageManifest(),
+		}
+
+		repositoryKey := manifestRepositoryKey(location)
+		index, exists := byRepository[repositoryKey]
+		if !exists {
+			index = len(planned.repositories)
+			byRepository[repositoryKey] = index
+			planned.repositories = append(planned.repositories, repositoryPlan{
+				event:    event,
+				location: location,
+			})
+		}
+		planned.repositories[index].targets = append(planned.repositories[index].targets, target)
 	}
 
-	location, err := matched.Location()
-	if err != nil {
-		return plan{}, err
+	if len(planned.repositories) == 0 {
+		return eventPlan{}, firstTagError
 	}
 
-	branch := branchName(event, matched.Env())
-	if err := validateBranch(branch); err != nil {
-		return plan{}, err
+	// A deterministic order makes branch identities and retry behavior stable,
+	// while processing repositories sequentially bounds concurrent clone memory.
+	sort.Slice(planned.repositories, func(i, j int) bool {
+		return manifestRepositoryKey(planned.repositories[i].location) <
+			manifestRepositoryKey(planned.repositories[j].location)
+	})
+
+	for i := range planned.repositories {
+		repository := &planned.repositories[i]
+		repository.targets, err = normalizeManifestTargets(repository.location.RepositoryURL, repository.targets)
+		if err != nil {
+			return eventPlan{}, err
+		}
+
+		environments := make([]string, 0, len(repository.targets))
+		seenEnvironments := make(map[string]struct{}, len(repository.targets))
+		for _, target := range repository.targets {
+			if _, exists := seenEnvironments[target.env]; exists {
+				continue
+			}
+			seenEnvironments[target.env] = struct{}{}
+			environments = append(environments, target.env)
+		}
+		sort.Strings(environments)
+		repository.env = strings.Join(environments, ",")
+
+		branchEnv := repository.env
+		if len(environments) > 1 {
+			branchEnv = "multi"
+		}
+		repository.branch = repositoryBranchName(event, branchEnv, *repository)
+		if err := validateBranch(repository.branch); err != nil {
+			return eventPlan{}, err
+		}
 	}
 
-	return plan{
-		event:    event,
-		location: location,
-		env:      matched.Env(),
-		branch:   branch,
-		// The comment block is metadata read off the image, so it needs the
-		// annotation turned on. The rule can still opt out of it on its own.
-		writesImageManifest: s.annotateFromLabels && matched.WritesImageManifest(),
-	}, nil
+	return planned, nil
 }
 
-// apply carries the plan out against the manifest repository.
-func (s *Service) apply(ctx context.Context, target plan) error {
+func normalizeManifestTargets(repositoryURL string, targets []manifestTarget) ([]manifestTarget, error) {
+	sort.Slice(targets, func(i, j int) bool {
+		if targets[i].location.Dir == targets[j].location.Dir {
+			return targets[i].env < targets[j].env
+		}
+		return targets[i].location.Dir < targets[j].location.Dir
+	})
+
+	unique := targets[:0]
+	for _, target := range targets {
+		if len(unique) > 0 && unique[len(unique)-1].location.Dir == target.location.Dir {
+			previous := unique[len(unique)-1]
+			if previous.env != target.env || previous.writesImageManifest != target.writesImageManifest {
+				return nil, fmt.Errorf(
+					"%w: conflicting rules for %s/%s",
+					model.ErrIncompleteRule,
+					repositoryURL,
+					target.location.Dir,
+				)
+			}
+			continue
+		}
+		unique = append(unique, target)
+	}
+	return unique, nil
+}
+
+// apply carries the plan out one manifest repository at a time. Image labels
+// are resolved once per event even when several repositories are affected.
+func (s *Service) apply(ctx context.Context, target eventPlan) error {
 	labels := s.imageLabels(ctx, target.event)
+	messages := make([]renderedMessages, len(target.repositories))
+
+	// Render every repository before the first remote call. A configuration
+	// error must not leave an event partially applied across repositories.
+	for i, repository := range target.repositories {
+		rendered, err := s.messages.render(messageTemplateData{
+			Environment:     repository.env,
+			ImageName:       imageName(repository.event.Repository),
+			ImageRepository: repository.event.Repository,
+			Image:           repository.event.Reference().Name(),
+			ImageTag:        repository.event.Tag,
+			DefaultBody:     FormatPullRequestBody(labels),
+		})
+		if err != nil {
+			return fmt.Errorf("render messages for %s: %w", repository.location.RepositoryURL, err)
+		}
+		messages[i] = rendered
+	}
+
+	failures := make([]error, 0, len(target.repositories))
+	for i, repository := range target.repositories {
+		if err := s.applyRepository(ctx, repository, labels, messages[i]); err != nil {
+			failures = append(failures, fmt.Errorf("update %s: %w", repository.location.RepositoryURL, err))
+		}
+	}
+
+	return errors.Join(failures...)
+}
+
+// applyRepository patches every selected directory in one disposable checkout.
+// A target failure closes the checkout without committing any target in it.
+func (s *Service) applyRepository(
+	ctx context.Context,
+	target repositoryPlan,
+	labels model.ImageLabels,
+	messages renderedMessages,
+) error {
+	// A retryable failure in another repository redelivers the whole event. The
+	// stable branch lets an already completed group avoid another clone/patch.
+	if err := s.ensureNoOpenPullRequest(ctx, target); err != nil {
+		return err
+	}
 
 	checkout, err := s.manifests.Checkout(ctx, target.location.RepositoryURL)
 	if err != nil {
-		return model.Retryable(err)
+		return model.Retryable(fmt.Errorf("checkout manifest repository: %w", err))
 	}
 	defer func() {
 		if err := checkout.Close(); err != nil {
@@ -162,29 +321,56 @@ func (s *Service) apply(ctx context.Context, target plan) error {
 		}
 	}()
 
-	// The branch is created before the manifests are edited: go-git refuses to
-	// switch branches with a dirty working copy.
-	if err := checkout.CreateBranch(ctx, target.branch); err != nil {
-		return model.Retryable(err)
-	}
-
-	if err := s.patcher.Patch(ctx, filepath.Join(checkout.Dir(), target.location.Dir), target.update(labels)); err != nil {
-		// A manifest that does not reference the image, or already carries the
-		// tag, is a configuration fact rather than a failure. Retrying it would
-		// give the same answer forever.
+	manifests, err := s.resolveManifestTargets(ctx, checkout.Dir(), target)
+	if err != nil {
 		return err
 	}
 
-	if err := checkout.Commit(ctx, target.commitMessage()); err != nil {
+	// The branch is created before the manifests are edited: go-git refuses to
+	// switch branches with a dirty working copy.
+	if err := checkout.CreateBranch(ctx, target.branch); err != nil {
+		return model.Retryable(fmt.Errorf("create update branch: %w", err))
+	}
+
+	changed := false
+	for _, manifest := range manifests {
+		err := s.patcher.Patch(
+			ctx,
+			filepath.Join(checkout.Dir(), manifest.location.Dir),
+			manifest.update(target.event, labels),
+		)
+		if err == nil {
+			changed = true
+			continue
+		}
+		if errors.Is(err, model.ErrNoDifference) {
+			continue
+		}
+		// These sentinels describe stable repository/configuration state. Every
+		// other failure may be transient (filesystem, parser, or I/O) and must be
+		// retried rather than acknowledged and lost by the event source.
+		if errors.Is(err, model.ErrManifestNotFound) ||
+			errors.Is(err, model.ErrInvalidManifest) ||
+			errors.Is(err, model.ErrImageNotManaged) {
+			return fmt.Errorf("patch manifest %s: %w", manifest.location.Dir, err)
+		}
+		return model.Retryable(fmt.Errorf("patch manifest %s: %w", manifest.location.Dir, err))
+	}
+
+	if !changed {
+		return fmt.Errorf("%w: %s", model.ErrNoDifference, target.location.RepositoryURL)
+	}
+
+	if err := checkout.Commit(ctx, messages.commitMessage); err != nil {
 		if errors.Is(err, model.ErrNoDifference) {
 			return err
 		}
-		return model.Retryable(err)
+		return model.Retryable(fmt.Errorf("commit manifest changes: %w", err))
 	}
 
 	if err := checkout.Push(ctx, target.branch); err != nil {
 		if !errors.Is(err, model.ErrDuplicatePullRequest) {
-			return model.Retryable(err)
+			return model.Retryable(fmt.Errorf("push update branch: %w", err))
 		}
 
 		// The branch is on the remote, but that does not mean the pull request was
@@ -192,7 +378,7 @@ func (s *Service) apply(ctx context.Context, target plan) error {
 		// behind, and every later attempt pushes a commit with a different hash, so
 		// treating the rejected push as "already done" would drop the update for
 		// good. Ask before giving up.
-		if err := s.ensureNotAlreadyOpen(ctx, target); err != nil {
+		if err := s.ensureNoOpenPullRequest(ctx, target); err != nil {
 			return err
 		}
 
@@ -202,9 +388,13 @@ func (s *Service) apply(ctx context.Context, target plan) error {
 		)
 	}
 
-	url, err := s.manifests.CreatePullRequest(ctx, target.pullRequest(labels))
+	url, err := s.manifests.CreatePullRequest(ctx, target.pullRequest(labels, messages))
 	if err != nil {
-		return model.Retryable(err)
+		wrapped := fmt.Errorf("create pull request: %w", err)
+		if errors.Is(err, model.ErrInvalidPullRequest) {
+			return wrapped
+		}
+		return model.Retryable(wrapped)
 	}
 
 	slog.InfoContext(ctx, "opened the image update pull request",
@@ -217,21 +407,71 @@ func (s *Service) apply(ctx context.Context, target plan) error {
 	return nil
 }
 
-// ensureNotAlreadyOpen decides what a rejected push means.
+func (s *Service) resolveManifestTargets(
+	ctx context.Context,
+	checkoutRoot string,
+	target repositoryPlan,
+) ([]manifestTarget, error) {
+	resolved := make([]manifestTarget, 0, len(target.targets))
+	for _, source := range target.targets {
+		directories, err := s.directories.Resolve(ctx, checkoutRoot, source.location.Dir)
+		if err != nil {
+			wrapped := fmt.Errorf("resolve manifest directories for %s: %w", source.location.Dir, err)
+			if errors.Is(err, model.ErrManifestNotFound) ||
+				errors.Is(err, model.ErrInvalidManifest) ||
+				errors.Is(err, model.ErrIncompleteRule) {
+				return nil, wrapped
+			}
+			return nil, model.Retryable(wrapped)
+		}
+		if len(directories) == 0 {
+			return nil, fmt.Errorf(
+				"%w: no manifest directory matches %q",
+				model.ErrManifestNotFound,
+				source.location.Dir,
+			)
+		}
+		for _, directory := range directories {
+			manifest := source
+			manifest.location.Dir = directory
+			resolved = append(resolved, manifest)
+		}
+	}
+
+	normalized, err := normalizeManifestTargets(target.location.RepositoryURL, resolved)
+	if err != nil {
+		return nil, err
+	}
+	return normalized, nil
+}
+
+// ensureNoOpenPullRequest checks whether the stable branch already has a pull
+// request. It is used before checkout to make redelivery cheap and after a
+// rejected push to distinguish a completed update from an orphan branch.
 //
 // Returns:
 //
-//	nil when the branch exists but no pull request does, so the caller has to open
-//	one; ErrDuplicatePullRequest when the update is genuinely already open; a
-//	retryable error when the lookup could not be made.
-func (s *Service) ensureNotAlreadyOpen(ctx context.Context, target plan) error {
-	url, err := s.manifests.FindOpenPullRequest(ctx, target.location.Owner, target.location.Repository, target.branch)
-	if err != nil {
-		return model.Retryable(err)
+//	nil when no pull request exists, ErrDuplicatePullRequest when the update is
+//	already open, or a retryable error when the lookup could not be made.
+func (s *Service) ensureNoOpenPullRequest(ctx context.Context, target repositoryPlan) error {
+	branches := []string{target.branch}
+	if legacy := legacyRepositoryBranchName(target.event, target.env, target); legacy != "" && legacy != target.branch {
+		branches = append(branches, legacy)
 	}
 
-	if url != "" {
-		return fmt.Errorf("%w: %s is already open at %s", model.ErrDuplicatePullRequest, target.branch, url)
+	for _, branch := range branches {
+		url, err := s.manifests.FindOpenPullRequest(
+			ctx,
+			target.location.Owner,
+			target.location.Repository,
+			branch,
+		)
+		if err != nil {
+			return model.Retryable(fmt.Errorf("find open pull request for %s: %w", branch, err))
+		}
+		if url != "" {
+			return fmt.Errorf("%w: %s is already open at %s", model.ErrDuplicatePullRequest, branch, url)
+		}
 	}
 
 	return nil
@@ -261,11 +501,11 @@ func (s *Service) imageLabels(ctx context.Context, event model.ImagePushEvent) m
 }
 
 // update is the change to hand to the manifest patcher.
-func (p plan) update(labels model.ImageLabels) model.ImageUpdate {
-	image := p.event.Reference().Name()
+func (t manifestTarget) update(event model.ImagePushEvent, labels model.ImageLabels) model.ImageUpdate {
+	image := event.Reference().Name()
 
-	update := model.ImageUpdate{Image: image, NewTag: p.event.Tag}
-	if p.writesImageManifest {
+	update := model.ImageUpdate{Image: image, NewTag: event.Tag}
+	if t.writesImageManifest {
 		manifest := model.NewImageManifest(image, labels)
 		update.Manifest = &manifest
 	}
@@ -273,11 +513,7 @@ func (p plan) update(labels model.ImageLabels) model.ImageUpdate {
 	return update
 }
 
-func (p plan) commitMessage() string {
-	return fmt.Sprintf(commitFormat, p.env, p.event.Repository)
-}
-
-func (p plan) pullRequest(labels model.ImageLabels) model.PullRequest {
+func (p repositoryPlan) pullRequest(labels model.ImageLabels, messages renderedMessages) model.PullRequest {
 	// The build actor is the person whose push produced the image, so they are
 	// the one who should look at the update.
 	var actors []string
@@ -289,8 +525,8 @@ func (p plan) pullRequest(labels model.ImageLabels) model.PullRequest {
 		Owner:      p.location.Owner,
 		Repository: p.location.Repository,
 		Head:       p.branch,
-		Title:      fmt.Sprintf(titleFormat, p.env, imageName(p.event.Repository)),
-		Body:       FormatPullRequestBody(labels),
+		Title:      messages.pullRequestTitle,
+		Body:       messages.pullRequestBody,
 		Assignees:  actors,
 		Reviewers:  actors,
 	}
@@ -308,12 +544,67 @@ func imageName(repository string) string {
 	return strings.Join(segments, "/")
 }
 
-// branchName builds image_updater_{image}_{env}_{tag}.
-func branchName(event model.ImagePushEvent, env string) string {
+// manifestRepositoryKey canonicalizes GitHub's case-insensitive owner and
+// repository identity for grouping and multi-target branch hashing.
+func manifestRepositoryKey(location model.ManifestLocation) string {
+	return strings.ToLower(location.Owner) + "\x00" + strings.ToLower(location.Repository)
+}
+
+// repositoryBranchName builds one stable branch identity for every target in a
+// manifest repository. A single target keeps its historical identity input but
+// also receives the hash suffix used by every newly created branch.
+func repositoryBranchName(event model.ImagePushEvent, env string, target repositoryPlan) string {
+	if len(target.targets) == 1 {
+		return branchName(event, env, target.targets[0].location)
+	}
+
+	identity := make([]string, 0, 4+len(target.targets)*2)
+	identity = append(identity, event.Host, event.Repository, manifestRepositoryKey(target.location), event.Tag)
+	for _, manifest := range target.targets {
+		identity = append(identity, manifest.location.Dir, manifest.env)
+	}
+	digest := sha256.Sum256([]byte(strings.Join(identity, "\x00")))
+
 	return fmt.Sprintf(branchFormat,
 		strings.ReplaceAll(imageName(event.Repository), "/", "_"),
 		env,
 		event.Tag,
+		digest[:8],
+	)
+}
+
+// legacyRepositoryBranchName returns the pre-hash branch name for a single
+// target so an open pull request created by the previous release still blocks
+// a duplicate update after deployment. New branches always use branchFormat.
+func legacyRepositoryBranchName(event model.ImagePushEvent, env string, target repositoryPlan) string {
+	if len(target.targets) != 1 {
+		return ""
+	}
+	return fmt.Sprintf(
+		legacyBranchFormat,
+		strings.ReplaceAll(imageName(event.Repository), "/", "_"),
+		env,
+		event.Tag,
+	)
+}
+
+// branchName builds a readable branch name with a stable identity suffix.
+func branchName(event model.ImagePushEvent, env string, location model.ManifestLocation) string {
+	identity := strings.Join([]string{
+		event.Host,
+		event.Repository,
+		location.RepositoryURL,
+		location.Dir,
+		env,
+		event.Tag,
+	}, "\x00")
+	digest := sha256.Sum256([]byte(identity))
+
+	return fmt.Sprintf(branchFormat,
+		strings.ReplaceAll(imageName(event.Repository), "/", "_"),
+		env,
+		event.Tag,
+		digest[:8],
 	)
 }
 

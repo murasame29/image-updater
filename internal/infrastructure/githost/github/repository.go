@@ -11,11 +11,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/bradleyfalzon/ghinstallation/v2"
 	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	gogithub "github.com/google/go-github/v88/github"
@@ -111,8 +114,13 @@ func NewRepository(cfg Config) (*Repository, error) {
 //
 //	The working copy, which the caller closes, or an error when the clone fails.
 func (r *Repository) Checkout(ctx context.Context, repositoryURL string) (model.Checkout, error) {
+	if err := validateRepositoryURL(repositoryURL); err != nil {
+		return nil, err
+	}
+
 	// An installation token only lives for an hour while this process runs for
-	// days, so it is fetched per checkout. The transport refreshes it as needed.
+	// days, so it is fetched per checkout. Validate the destination first: this
+	// credential must never be attached to a non-GitHub origin.
 	token, err := r.transport.Token(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get a GitHub App installation token: %w", err)
@@ -126,16 +134,21 @@ func (r *Repository) Checkout(ctx context.Context, repositoryURL string) (model.
 	auth := &githttp.BasicAuth{Username: r.cfg.Username, Password: token}
 
 	repo, err := gogit.PlainCloneContext(ctx, dir, false, &gogit.CloneOptions{
-		URL:  repositoryURL,
-		Auth: auth,
+		URL:           repositoryURL,
+		Auth:          auth,
+		ReferenceName: plumbing.NewBranchReferenceName(r.cfg.BaseBranch),
+		SingleBranch:  true,
+		Depth:         1,
+		Tags:          gogit.NoTags,
 	})
 	if err != nil {
 		_ = os.RemoveAll(dir)
-		return nil, fmt.Errorf("failed to clone %s: %w", repositoryURL, err)
+		return nil, fmt.Errorf("failed to clone %s at %s: %w", repositoryURL, r.cfg.BaseBranch, err)
 	}
 
 	slog.DebugContext(ctx, "cloned the manifest repository",
 		slog.String("vcs.repository.url.full", repositoryURL),
+		slog.String("vcs.ref.base.name", r.cfg.BaseBranch),
 		slog.String("checkout.dir", dir),
 	)
 
@@ -151,6 +164,24 @@ func (r *Repository) Checkout(ctx context.Context, repositoryURL string) (model.
 			}
 		},
 	}, nil
+}
+
+func validateRepositoryURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("github: invalid repository URL %q: %w", raw, err)
+	}
+	if parsed.Scheme != "https" || parsed.Host != "github.com" || parsed.User != nil ||
+		parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("github: repository URL %q must use https://github.com without credentials, port, query, or fragment", raw)
+	}
+
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(segments) != 2 || segments[0] == "" || segments[1] == "" {
+		return fmt.Errorf("github: repository URL %q must contain exactly an owner and repository", raw)
+	}
+
+	return nil
 }
 
 // CreatePullRequest opens a pull request for an already pushed branch.
@@ -174,7 +205,11 @@ func (r *Repository) CreatePullRequest(ctx context.Context, pr model.PullRequest
 		Body:  gogithub.Ptr(pr.Body),
 	})
 	if err != nil {
-		return "", fmt.Errorf("failed to create the pull request on %s/%s: %w", pr.Owner, pr.Repository, err)
+		wrapped := fmt.Errorf("failed to create the pull request on %s/%s: %w", pr.Owner, pr.Repository, err)
+		if isInvalidPullRequestError(err) {
+			return "", fmt.Errorf("%w: %w", model.ErrInvalidPullRequest, wrapped)
+		}
+		return "", wrapped
 	}
 
 	number := created.GetNumber()
@@ -199,6 +234,15 @@ func (r *Repository) CreatePullRequest(ctx context.Context, pr model.PullRequest
 	}
 
 	return created.GetHTMLURL(), nil
+}
+
+func isInvalidPullRequestError(err error) bool {
+	var response *gogithub.ErrorResponse
+	if !errors.As(err, &response) || response.Response == nil {
+		return false
+	}
+	return response.Response.StatusCode == http.StatusBadRequest ||
+		response.Response.StatusCode == http.StatusUnprocessableEntity
 }
 
 // FindOpenPullRequest looks for an open pull request opened from head.

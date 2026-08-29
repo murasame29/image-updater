@@ -47,8 +47,12 @@ func BuildWorker(ctx context.Context, cfg config.Config) (*application.Worker, e
 	providers := []any{
 		func() config.Config { return cfg },
 		func() aws.Config { return awsCfg },
+		provideFileConfig,
 		provideRuleSet,
+		provideMessageRenderer,
 		provideMetadataResolver,
+		provideKustomizePatcher,
+		provideManifestDirectoryResolver,
 		provideManifestPatcher,
 		provideManifestRepository,
 		provideEventDecoder,
@@ -72,8 +76,31 @@ func BuildWorker(ctx context.Context, cfg config.Config) (*application.Worker, e
 	return worker, nil
 }
 
-func provideRuleSet(cfg config.Config) (model.RuleSet, error) {
-	return ruleset.Load(cfg.App.RulePath)
+func provideFileConfig(cfg config.Config) (ruleset.FileConfig, error) {
+	return ruleset.LoadFile(cfg.App.RulePath)
+}
+
+func provideRuleSet(file ruleset.FileConfig) model.RuleSet {
+	return file.RuleSet
+}
+
+func provideMessageRenderer(file ruleset.FileConfig) (*application.MessageRenderer, error) {
+	templates := application.MessageTemplates{
+		PullRequestTitle: application.DefaultPullRequestTitleTemplate,
+		PullRequestBody:  application.DefaultPullRequestBodyTemplate,
+		CommitMessage:    application.DefaultCommitMessageTemplate,
+	}
+	if file.Messages.PullRequestTitle != nil {
+		templates.PullRequestTitle = *file.Messages.PullRequestTitle
+	}
+	if file.Messages.PullRequestBody != nil {
+		templates.PullRequestBody = *file.Messages.PullRequestBody
+	}
+	if file.Messages.CommitMessage != nil {
+		templates.CommitMessage = *file.Messages.CommitMessage
+	}
+
+	return application.NewMessageRenderer(templates)
 }
 
 // provideMetadataResolver registers one resolver per supported registry.
@@ -87,8 +114,16 @@ func provideMetadataResolver(awsCfg aws.Config) model.MetadataResolver {
 	})
 }
 
-func provideManifestPatcher(cfg config.Config) model.ManifestPatcher {
+func provideKustomizePatcher(cfg config.Config) kustomize.Patcher {
 	return kustomize.NewPatcher(kustomize.WithIndent(cfg.App.ImageManifestIndent))
+}
+
+func provideManifestDirectoryResolver(patcher kustomize.Patcher) model.ManifestDirectoryResolver {
+	return patcher
+}
+
+func provideManifestPatcher(patcher kustomize.Patcher) model.ManifestPatcher {
+	return patcher
 }
 
 func provideManifestRepository(cfg config.Config) (model.ManifestRepository, error) {
@@ -126,9 +161,11 @@ func provideService(
 	rules model.RuleSet,
 	resolver model.MetadataResolver,
 	manifests model.ManifestRepository,
+	directories model.ManifestDirectoryResolver,
 	patcher model.ManifestPatcher,
+	messages *application.MessageRenderer,
 ) (*application.Service, error) {
-	return application.NewService(rules, resolver, manifests, patcher,
+	return application.NewService(rules, resolver, manifests, directories, patcher, messages,
 		application.WithImageLabelAnnotation(cfg.App.ImageLabelAnnotation),
 	)
 }

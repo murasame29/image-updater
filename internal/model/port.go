@@ -77,6 +77,15 @@ type Checkout interface {
 	Close() error
 }
 
+// ManifestDirectoryResolver expands a repository-relative manifest directory
+// pattern against one checked-out working copy.
+type ManifestDirectoryResolver interface {
+	// Resolve returns deterministic repository-relative directories. A literal
+	// pattern resolves to itself; a recursive pattern reports
+	// ErrManifestNotFound when no manifest directory matches.
+	Resolve(ctx context.Context, checkoutRoot, pattern string) ([]string, error)
+}
+
 // ManifestPatcher applies an image tag update to the manifests of a directory.
 //
 // The kustomize implementation is the only one today; a Helm values.yaml

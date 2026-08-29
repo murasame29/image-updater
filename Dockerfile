@@ -5,6 +5,8 @@ ARG DEBIAN_VERSION=bookworm
 FROM golang:${GO_VERSION}-${DEBIAN_VERSION} AS build
 SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
 WORKDIR /build
+COPY go.mod go.sum ./
+RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -o /build/main -ldflags="-w -s" cmd/main.go
 

@@ -2,13 +2,16 @@
   denyImageTag: [latest]
   registryURI: 123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/apps/$1/$2/$3
   githubRepository: "https://github.com/example-org/example-manifests/services/$1/$2/$3/overlays/development"
+  environment: development
 
 - allowImageTag: regexp:^[0-9a-f]{7,40}$
   denyImageTag: [latest]
   registryURI: 123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/apps/alpha/$1/$2
   githubRepository: "https://github.com/example-org/example-manifests/services/alpha/$1/$2/overlays/development"
+  environment: development
 
 - allowImageTag: regexp:^[a-z]{0,10}\.[0-9a-f]{7,40}$
   denyImageTag: [latest]
   registryURI: 123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/apps/multi-tenant/$2/$3
   githubRepository: "https://github.com/example-org/example-manifests/services/multi-tenant/$2/$3/overlays/development"
+  environment: development

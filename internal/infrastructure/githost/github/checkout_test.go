@@ -29,7 +29,8 @@ func TestIsNonFastForward(t *testing.T) {
 			want: true,
 		},
 		{
-			// go-git はセンチネルをラップせずメッセージに埋め込むことがある。
+			// go-git sometimes embeds the sentinel text in the message without
+			// wrapping the sentinel itself.
 			name: "メッセージに埋め込まれている場合",
 			err:  errors.New(gogit.ErrNonFastForwardUpdate.Error() + ": refs/heads/x"),
 			want: true,

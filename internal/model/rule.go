@@ -15,8 +15,10 @@ const (
 	tagRegexpPrefix = "regexp:"
 	// variableMarker starts a capture in an image pattern, e.g. $1.
 	variableMarker = "$"
-	// wildcardSegment matches any single path segment without capturing it.
+	// wildcardSegment matches any single image repository path segment without capturing it.
 	wildcardSegment = "*"
+	// recursiveWildcardSegment matches zero or more manifest directory segments.
+	recursiveWildcardSegment = "**"
 	// tagPatternSeparator splits the repository pattern from the tag pattern.
 	tagPatternSeparator = ":"
 	// tagPieceSeparator splits a tag into the pieces a tag pattern captures.
@@ -43,9 +45,10 @@ type Rule struct {
 	ImagePattern string
 
 	// ManifestURL is where the manifests to update live, with the captures of
-	// ImagePattern still to expand.
+	// ImagePattern still to expand. One whole path segment may be **, which
+	// selects every matching kustomization directory below the repository.
 	//
-	//	https://github.com/example-org/example-manifests/services/$2/$1/overlays/development
+	//	https://github.com/example-org/example-manifests/services/$2/$1/overlays/**
 	ManifestURL string
 
 	// Env labels the environment the manifests belong to. It shows up in the
@@ -129,34 +132,51 @@ func NewRuleSet(rules []Rule) (RuleSet, error) {
 // Len is the number of rules in the set.
 func (s RuleSet) Len() int { return len(s.rules) }
 
-// Match finds the rule that covers event.
+// Matches finds every most-specific rule that covers event.
 //
 // A rule matches when the registry host is identical and the repository path
-// has the same number of segments, with every literal segment equal. The rule
-// with the most literal segments wins; the first one declared wins a tie.
+// has the same number of segments, with every literal segment equal. Rules with
+// the most literal segments win, and every tie is returned in declaration order.
+// Less-specific rules remain fallbacks and are not returned together with a more
+// specific rule.
 //
 // Returns:
 //
-//	The matched rule, or ErrNoMatchingRule when no rule covers the event.
-func (s RuleSet) Match(event ImagePushEvent) (MatchedRule, error) {
-	best := -1
-	bestWeight := 0
+//	The matched rules, or ErrNoMatchingRule when no rule covers the event.
+func (s RuleSet) Matches(event ImagePushEvent) ([]MatchedRule, error) {
+	bestWeight := -1
+	matches := make([]MatchedRule, 0, 1)
 
-	for i, rule := range s.rules {
+	for _, rule := range s.rules {
 		weight, ok := rule.match(event)
-		if !ok {
+		if !ok || weight < bestWeight {
 			continue
 		}
-		if best < 0 || weight > bestWeight {
-			best, bestWeight = i, weight
+		if weight > bestWeight {
+			bestWeight = weight
+			matches = matches[:0]
 		}
+		matches = append(matches, MatchedRule{compiled: rule, event: event})
 	}
 
-	if best < 0 {
-		return MatchedRule{}, fmt.Errorf("%w for %s", ErrNoMatchingRule, event.Reference())
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("%w for %s", ErrNoMatchingRule, event.Reference())
 	}
 
-	return MatchedRule{compiled: s.rules[best], event: event}, nil
+	return matches, nil
+}
+
+// Match finds the first most-specific rule that covers event.
+//
+// It is kept for callers that need one location. Use Matches when every tied
+// rule must be applied.
+func (s RuleSet) Match(event ImagePushEvent) (MatchedRule, error) {
+	matches, err := s.Matches(event)
+	if err != nil {
+		return MatchedRule{}, err
+	}
+
+	return matches[0], nil
 }
 
 // Rule is the configured rule behind the match.
@@ -204,6 +224,16 @@ func (m MatchedRule) Location() (ManifestLocation, error) {
 	if err != nil {
 		return ManifestLocation{}, err
 	}
+	for name, value := range variables {
+		if value == "." || value == ".." || strings.ContainsAny(value, `/\\*?[]`) {
+			return ManifestLocation{}, fmt.Errorf(
+				"%w: capture %s has an unsafe path value %q",
+				ErrIncompleteRule,
+				name,
+				value,
+			)
+		}
+	}
 
 	expanded := expandVariables(m.compiled.rule.ManifestURL, variables)
 	if strings.Contains(expanded, variableMarker) {
@@ -223,6 +253,9 @@ func compileRule(rule Rule) (compiledRule, error) {
 	}
 	if strings.TrimSpace(rule.ManifestURL) == "" {
 		return compiledRule{}, fmt.Errorf("manifest URL is empty")
+	}
+	if _, err := parseManifestURL(rule.ManifestURL); err != nil {
+		return compiledRule{}, err
 	}
 
 	allow, err := newTagMatcher(rule.AllowTag)
@@ -383,8 +416,9 @@ func parseManifestURL(raw string) (ManifestLocation, error) {
 		return ManifestLocation{}, fmt.Errorf("%w: %q is not a URL: %v", ErrIncompleteRule, raw, err)
 	}
 
-	if parsed.Scheme == "" || parsed.Host == "" {
-		return ManifestLocation{}, fmt.Errorf("%w: %q has no scheme or host", ErrIncompleteRule, raw)
+	if parsed.Scheme != "https" || parsed.Host != "github.com" || parsed.User != nil ||
+		parsed.RawQuery != "" || parsed.Fragment != "" {
+		return ManifestLocation{}, fmt.Errorf("%w: %q must be an https://github.com URL without credentials, port, query, or fragment", ErrIncompleteRule, raw)
 	}
 
 	segments := splitPath(parsed.Path)
@@ -392,19 +426,42 @@ func parseManifestURL(raw string) (ManifestLocation, error) {
 		return ManifestLocation{}, fmt.Errorf("%w: %q has no owner and repository", ErrIncompleteRule, raw)
 	}
 
+	manifestSegments := segments[2:]
+	if err := validateManifestPath(manifestSegments); err != nil {
+		return ManifestLocation{}, fmt.Errorf("%w: %q has an invalid manifest path: %v", ErrIncompleteRule, raw, err)
+	}
+
 	// The captures come from an external event, so the directory is checked for
 	// escaping the working copy before anything joins it to a filesystem path.
-	dir := path.Join(segments[2:]...)
+	dir := path.Join(manifestSegments...)
 	if path.IsAbs(dir) || dir == ".." || strings.HasPrefix(dir, "../") {
 		return ManifestLocation{}, fmt.Errorf("%w: %q escapes the repository", ErrIncompleteRule, raw)
 	}
 
 	return ManifestLocation{
-		RepositoryURL: fmt.Sprintf("%s://%s/%s/%s", parsed.Scheme, parsed.Host, segments[0], segments[1]),
+		RepositoryURL: fmt.Sprintf("https://github.com/%s/%s", segments[0], segments[1]),
 		Owner:         segments[0],
 		Repository:    segments[1],
 		Dir:           dir,
 	}, nil
+}
+
+func validateManifestPath(segments []string) error {
+	recursiveWildcards := 0
+	for _, segment := range segments {
+		switch {
+		case segment == "." || segment == "..":
+			return fmt.Errorf("segment %q is not allowed", segment)
+		case segment == recursiveWildcardSegment:
+			recursiveWildcards++
+		case strings.ContainsAny(segment, `\\*?[]`):
+			return fmt.Errorf("wildcards must be a whole ** segment, got %q", segment)
+		}
+	}
+	if recursiveWildcards > 1 {
+		return fmt.Errorf("at most one ** segment is allowed")
+	}
+	return nil
 }
 
 func isVariable(segment string) bool { return strings.Contains(segment, variableMarker) }

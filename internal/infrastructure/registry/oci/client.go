@@ -9,6 +9,7 @@ package oci
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -35,10 +36,14 @@ const (
 	defaultScheme  = "https"
 	defaultTimeout = 30 * time.Second
 
-	// maxBlobSize caps the config blob read. An image config is a few KiB; the
-	// limit only keeps a misbehaving registry from exhausting memory.
-	maxBlobSize = 4 << 20
+	// maxBlobSize caps manifests and config blobs. maxErrorBodyDrain lets the
+	// HTTP transport reuse connections for ordinary error responses without
+	// accepting an unbounded body from a misbehaving registry.
+	maxBlobSize       = 4 << 20
+	maxErrorBodyDrain = 32 << 10
 )
+
+var errDecodeResponse = errors.New("decode registry response")
 
 // Authenticator supplies the value of the Authorization header for a registry.
 //
@@ -165,19 +170,18 @@ func (c *Client) Resolve(ctx context.Context, ref model.ImageReference) (model.I
 func (c *Client) manifest(ctx context.Context, ref model.ImageReference, authHeader, reference string) (manifest, error) {
 	url := fmt.Sprintf("%s://%s/v2/%s/manifests/%s", c.scheme, ref.Host, ref.Repository, reference)
 
-	body, err := c.get(ctx, url, authHeader, strings.Join([]string{
+	var parsed manifest
+	err := c.getJSON(ctx, url, authHeader, strings.Join([]string{
 		mediaTypeOCIManifest,
 		mediaTypeOCIIndex,
 		mediaTypeDockerManifest,
 		mediaTypeDockerIndex,
-	}, ", "))
+	}, ", "), &parsed)
 	if err != nil {
+		if errors.Is(err, errDecodeResponse) {
+			return manifest{}, fmt.Errorf("failed to parse the manifest of %s: %w", ref, err)
+		}
 		return manifest{}, fmt.Errorf("failed to fetch the manifest of %s: %w", ref, err)
-	}
-
-	var parsed manifest
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return manifest{}, fmt.Errorf("failed to parse the manifest of %s: %w", ref, err)
 	}
 
 	return parsed, nil
@@ -191,26 +195,24 @@ func (c *Client) imageConfig(ctx context.Context, ref model.ImageReference, auth
 
 	url := fmt.Sprintf("%s://%s/v2/%s/blobs/%s", c.scheme, ref.Host, ref.Repository, digest)
 
-	body, err := c.get(ctx, url, authHeader, "*/*")
-	if err != nil {
-		return imageConfig{}, fmt.Errorf("failed to fetch the config blob of %s: %w", ref, err)
-	}
-
 	var parsed imageConfig
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return imageConfig{}, fmt.Errorf("failed to parse the config blob of %s: %w", ref, err)
+	if err := c.getJSON(ctx, url, authHeader, "*/*", &parsed); err != nil {
+		if errors.Is(err, errDecodeResponse) {
+			return imageConfig{}, fmt.Errorf("failed to parse the config blob of %s: %w", ref, err)
+		}
+		return imageConfig{}, fmt.Errorf("failed to fetch the config blob of %s: %w", ref, err)
 	}
 
 	return parsed, nil
 }
 
-func (c *Client) get(ctx context.Context, url, authHeader, accept string) ([]byte, error) {
+func (c *Client) getJSON(ctx context.Context, url, authHeader, accept string, destination any) error {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build the request: %w", err)
+		return fmt.Errorf("failed to build the request: %w", err)
 	}
 
 	req.Header.Set("Authorization", authHeader)
@@ -218,18 +220,39 @@ func (c *Client) get(ctx context.Context, url, authHeader, accept string) ([]byt
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		_, _ = io.CopyN(io.Discard, resp.Body, maxErrorBodyDrain)
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBlobSize))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read the response body: %w", err)
+	limited := &io.LimitedReader{R: resp.Body, N: maxBlobSize + 1}
+	decoder := json.NewDecoder(limited)
+	if err := decoder.Decode(destination); err != nil {
+		_, _ = io.Copy(io.Discard, limited)
+		if limited.N == 0 {
+			return fmt.Errorf("registry response exceeds the %d byte limit", maxBlobSize)
+		}
+		return fmt.Errorf("%w: %w", errDecodeResponse, err)
 	}
 
-	return body, nil
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		_, _ = io.Copy(io.Discard, limited)
+		if limited.N == 0 {
+			return fmt.Errorf("registry response exceeds the %d byte limit", maxBlobSize)
+		}
+		if err == nil {
+			return fmt.Errorf("%w: response contains more than one JSON value", errDecodeResponse)
+		}
+		return fmt.Errorf("%w: %w", errDecodeResponse, err)
+	}
+	if limited.N == 0 {
+		return fmt.Errorf("registry response exceeds the %d byte limit", maxBlobSize)
+	}
+
+	return nil
 }

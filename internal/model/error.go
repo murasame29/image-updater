@@ -27,6 +27,10 @@ var (
 	// ErrManifestNotFound means the manifest file the rule points at is missing.
 	ErrManifestNotFound = errors.New("manifest not found")
 
+	// ErrInvalidManifest means the manifest exists but cannot be safely parsed or
+	// edited. Retrying the same repository state cannot repair it.
+	ErrInvalidManifest = errors.New("invalid manifest")
+
 	// ErrImageNotManaged means the manifests do not reference the pushed image.
 	ErrImageNotManaged = errors.New("image not referenced by the manifests")
 
@@ -36,6 +40,10 @@ var (
 	// ErrDuplicatePullRequest means an update for the same image and tag has
 	// already been pushed, so the branch exists on the remote.
 	ErrDuplicatePullRequest = errors.New("duplicate pull request")
+
+	// ErrInvalidPullRequest means GitHub rejected deterministic pull request
+	// input. Retrying the same event and configuration cannot repair it.
+	ErrInvalidPullRequest = errors.New("invalid pull request")
 
 	// ErrRetryable marks a failure that has to be retried on a later delivery.
 	// Wrap transient failures with Retryable; everything else is terminal and

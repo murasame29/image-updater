@@ -1,16 +1,19 @@
-// Package kustomize updates the image tags of a kustomization.yaml.
+// Package kustomize locates and updates image tags in kustomization.yaml files.
 //
-// It is the kustomize implementation of model.ManifestPatcher: nothing outside
-// this package knows that the manifests happen to be kustomize overlays.
+// It implements the manifest directory resolver and patcher ports: nothing
+// outside this package knows that the manifests happen to be kustomize overlays.
 package kustomize
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"sigs.k8s.io/kustomize/api/types"
@@ -19,7 +22,12 @@ import (
 )
 
 // FileName is the manifest the patcher edits.
-const FileName = "kustomization.yaml"
+const (
+	FileName        = "kustomization.yaml"
+	maxManifestSize = 8 << 20
+)
+
+var errFileTooLarge = errors.New("file too large")
 
 // Patcher rewrites the images block of a kustomization.yaml.
 type Patcher struct {
@@ -42,7 +50,10 @@ func WithIndent(indent int) Option {
 	}
 }
 
-var _ model.ManifestPatcher = Patcher{}
+var (
+	_ model.ManifestDirectoryResolver = Patcher{}
+	_ model.ManifestPatcher           = Patcher{}
+)
 
 // NewPatcher builds a patcher indenting the metadata block by two spaces, which
 // is what kustomize itself emits.
@@ -54,6 +65,148 @@ func NewPatcher(opts ...Option) Patcher {
 	}
 
 	return patcher
+}
+
+// Resolve expands one optional ** segment in pattern to every directory that
+// contains a regular kustomization.yaml. Literal paths are returned unchanged
+// so Patch remains the source of their existing not-found diagnostics.
+func (Patcher) Resolve(ctx context.Context, checkoutRoot, pattern string) ([]string, error) {
+	const recursiveWildcard = "**"
+
+	segments := splitManifestPath(pattern)
+	wildcard := -1
+	for i, segment := range segments {
+		if segment == recursiveWildcard {
+			wildcard = i
+			break
+		}
+	}
+	if wildcard < 0 {
+		if err := rejectSymlinkPath(checkoutRoot, pattern); err != nil {
+			return nil, err
+		}
+		return []string{pattern}, nil
+	}
+
+	prefix := strings.Join(segments[:wildcard], "/")
+	if err := rejectSymlinkPath(checkoutRoot, prefix); err != nil {
+		return nil, err
+	}
+	walkRoot := filepath.Join(checkoutRoot, filepath.FromSlash(prefix))
+	matches := make([]string, 0)
+
+	err := filepath.WalkDir(walkRoot, func(current string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if entry.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.Name() != FileName || entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+
+		relative, err := filepath.Rel(checkoutRoot, filepath.Dir(current))
+		if err != nil {
+			return err
+		}
+		if filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("%w: manifest path %s escapes checkout %s", model.ErrInvalidManifest, current, checkoutRoot)
+		}
+
+		directory := filepath.ToSlash(relative)
+		if directory == "." {
+			directory = ""
+		}
+		if matchesRecursiveManifestPath(segments, splitManifestPath(directory), wildcard) {
+			if err := rejectSymlinkPath(checkoutRoot, directory); err != nil {
+				return err
+			}
+			matches = append(matches, directory)
+		}
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%w: no manifest directory matches %q", model.ErrManifestNotFound, pattern)
+		}
+		return nil, fmt.Errorf("walk manifest directories for %q: %w", pattern, err)
+	}
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("%w: no manifest directory matches %q", model.ErrManifestNotFound, pattern)
+	}
+
+	sort.Strings(matches)
+	return matches, nil
+}
+
+func rejectSymlinkPath(checkoutRoot, relative string) error {
+	converted := filepath.FromSlash(relative)
+	if filepath.IsAbs(converted) {
+		return fmt.Errorf("%w: manifest path %q is absolute", model.ErrInvalidManifest, relative)
+	}
+	cleaned := filepath.Clean(converted)
+	if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("%w: manifest path %q escapes the checkout", model.ErrInvalidManifest, relative)
+	}
+
+	current := filepath.Clean(checkoutRoot)
+	for _, segment := range splitManifestPath(filepath.ToSlash(cleaned)) {
+		current = filepath.Join(current, segment)
+		info, err := os.Lstat(current)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return fmt.Errorf("inspect manifest path %s: %w", current, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%w: manifest path component %s is a symlink", model.ErrInvalidManifest, current)
+		}
+	}
+	return nil
+}
+
+func splitManifestPath(value string) []string {
+	value = strings.Trim(value, "/")
+	if value == "" || value == "." {
+		return nil
+	}
+	return strings.Split(value, "/")
+}
+
+func matchesRecursiveManifestPath(pattern, candidate []string, wildcard int) bool {
+	fixedSegments := len(pattern) - 1
+	if len(candidate) < fixedSegments {
+		return false
+	}
+	for i := 0; i < wildcard; i++ {
+		if pattern[i] != candidate[i] {
+			return false
+		}
+	}
+
+	suffixLength := len(pattern) - wildcard - 1
+	for i := 1; i <= suffixLength; i++ {
+		if pattern[len(pattern)-i] != candidate[len(candidate)-i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Patch updates the tag of update.Image inside dir and, when asked for, refreshes
@@ -70,22 +223,33 @@ func NewPatcher(opts ...Option) Patcher {
 func (p Patcher) Patch(ctx context.Context, dir string, update model.ImageUpdate) error {
 	path := filepath.Join(dir, FileName)
 
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("%w: %s", model.ErrManifestNotFound, path)
 		}
-		return fmt.Errorf("failed to stat %s: %w", path, err)
+		return fmt.Errorf("failed to inspect %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("%w: %s is not a regular file", model.ErrInvalidManifest, path)
 	}
 
-	data, err := os.ReadFile(path)
+	if info.Size() > maxManifestSize {
+		return fmt.Errorf("%w: %s is too large: %d bytes exceeds the %d byte limit",
+			model.ErrInvalidManifest, path, info.Size(), maxManifestSize)
+	}
+
+	data, err := readFileLimited(path, maxManifestSize)
 	if err != nil {
+		if errors.Is(err, errFileTooLarge) {
+			return fmt.Errorf("%w: %s: %v", model.ErrInvalidManifest, path, err)
+		}
 		return fmt.Errorf("failed to read %s: %w", path, err)
 	}
 
 	doc, err := parse(data)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: failed to parse %s: %v", model.ErrInvalidManifest, path, err)
 	}
 
 	original := doc.Images()
@@ -100,7 +264,7 @@ func (p Patcher) Patch(ctx context.Context, dir string, update model.ImageUpdate
 	}
 
 	if err := doc.setNewTags(changed); err != nil {
-		return fmt.Errorf("failed to update the image tags: %w", err)
+		return fmt.Errorf("%w: failed to update the image tags: %v", model.ErrInvalidManifest, err)
 	}
 
 	if update.Manifest != nil {
@@ -123,6 +287,24 @@ func (p Patcher) Patch(ctx context.Context, dir string, update model.ImageUpdate
 	)
 
 	return nil
+}
+
+func readFileLimited(path string, limit int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("%w: file exceeds the %d byte limit", errFileTooLarge, limit)
+	}
+
+	return data, nil
 }
 
 // replaceTag sets newTag on the images block entries that refer to image.

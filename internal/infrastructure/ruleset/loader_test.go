@@ -55,6 +55,7 @@ func TestLoadMapsTheConfigurationKeys(t *testing.T) {
 	rule := matched.Rule()
 	assert.Equal(t, "123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/apps/$1/$2/$3", rule.ImagePattern)
 	assert.Equal(t, "https://github.com/example-org/example-manifests/services/$1/$2/$3/overlays/development", rule.ManifestURL)
+	assert.Equal(t, "development", matched.Env())
 	assert.Equal(t, []string{"latest", "main"}, rule.DenyTags)
 	assert.True(t, matched.WritesImageManifest())
 	require.NoError(t, matched.ValidateTag())
@@ -72,7 +73,23 @@ func TestParse(t *testing.T) {
 			name: "最小構成",
 			source: "" +
 				"- registryURI: 123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/apps/$1\n" +
+				"  githubRepository: https://github.com/example-org/example-manifests/services/$1\n" +
+				"  environment: development\n",
+		},
+		{
+			name: "旧 env キーは拒否",
+			source: "" +
+				"- registryURI: 123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/apps/$1\n" +
+				"  githubRepository: https://github.com/example-org/example-manifests/services/$1\n" +
+				"  env: development\n",
+			wantErr: true,
+		},
+		{
+			name: "environment がなければ拒否",
+			source: "" +
+				"- registryURI: 123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/apps/$1\n" +
 				"  githubRepository: https://github.com/example-org/example-manifests/services/$1\n",
+			wantErr: true,
 		},
 		{
 			name:    "空のファイルは拒否",
@@ -89,13 +106,15 @@ func TestParse(t *testing.T) {
 			source: "" +
 				"- registryURI: 123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/apps/$1\n" +
 				"  githubRepository: https://github.com/example-org/example-manifests/services/$1\n" +
+				"  environment: development\n" +
 				"  allowImageTag: 'regexp:^[0-9a-f{7,40}$'\n",
 			wantErr: true,
 		},
 		{
 			name: "manifest URL がなければ拒否",
 			source: "" +
-				"- registryURI: 123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/apps/$1\n",
+				"- registryURI: 123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/apps/$1\n" +
+				"  environment: development\n",
 			wantErr: true,
 		},
 	}
@@ -120,6 +139,7 @@ func TestParseReadsImageManifestFlag(t *testing.T) {
 	rules, err := Parse([]byte("" +
 		"- registryURI: 123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/apps/$1\n" +
 		"  githubRepository: https://github.com/example-org/example-manifests/services/$1\n" +
+		"  environment: development\n" +
 		"  imageManifest: false\n"))
 	require.NoError(t, err)
 
@@ -130,4 +150,29 @@ func TestParseReadsImageManifestFlag(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.False(t, matched.WritesImageManifest())
+}
+
+func TestParseFileReadsStructuredConfiguration(t *testing.T) {
+	t.Parallel()
+
+	file, err := ParseFile([]byte(`messages:
+  pullRequestTitle: '[{{.Environment}}][Image Updater][{{.ImageName}}] イメージの更新'
+  pullRequestBody: |-
+    ## イメージの更新
+
+    {{.DefaultBody}}
+  commitMessage: '[{{.Environment}}][image-committer][{{.ImageRepository}}] イメージの更新'
+rules:
+  - registryURI: 123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/apps/$1
+    githubRepository: https://github.com/example-org/example-manifests/services/$1
+    environment: production
+`))
+	require.NoError(t, err)
+	assert.Equal(t, 1, file.RuleSet.Len())
+	require.NotNil(t, file.Messages.PullRequestTitle)
+	require.NotNil(t, file.Messages.PullRequestBody)
+	require.NotNil(t, file.Messages.CommitMessage)
+	assert.Contains(t, *file.Messages.PullRequestTitle, "イメージの更新")
+	assert.Contains(t, *file.Messages.PullRequestBody, "{{.DefaultBody}}")
+	assert.Contains(t, *file.Messages.CommitMessage, "イメージの更新")
 }

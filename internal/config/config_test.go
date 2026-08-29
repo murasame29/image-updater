@@ -104,7 +104,8 @@ func TestLoadValidatesTheImageManifestIndent(t *testing.T) {
 		{name: "下限", value: "2", want: 2},
 		{name: "上限", value: "9", want: 9},
 		{name: "4 スペース", value: "4", want: 4},
-		// YAML emitter が黙って 2 に戻す値は、起動時に落として気づけるようにする。
+		// Reject values that the YAML emitter would silently reset to 2 so the
+		// misconfiguration is visible at startup.
 		{name: "下限未満は拒否", value: "1", wantErr: true},
 		{name: "上限超過は拒否", value: "10", wantErr: true},
 		{name: "0 は拒否", value: "0", wantErr: true},

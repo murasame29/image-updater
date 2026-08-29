@@ -43,6 +43,10 @@ func (f *fakeAPI) ReceiveMessage(ctx context.Context, _ *awssqs.ReceiveMessageIn
 	}
 }
 
+func (f *fakeAPI) ChangeMessageVisibility(_ context.Context, _ *awssqs.ChangeMessageVisibilityInput, _ ...func(*awssqs.Options)) (*awssqs.ChangeMessageVisibilityOutput, error) {
+	return &awssqs.ChangeMessageVisibilityOutput{}, nil
+}
+
 func (f *fakeAPI) DeleteMessage(_ context.Context, in *awssqs.DeleteMessageInput, _ ...func(*awssqs.Options)) (*awssqs.DeleteMessageOutput, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

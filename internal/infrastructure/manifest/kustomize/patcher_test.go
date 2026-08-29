@@ -271,11 +271,75 @@ func TestPatcher_Patch(t *testing.T) {
 	}
 }
 
+func TestPatcher_ResolveExpandsEveryRecursiveMatch(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	manifestDirs := []string{
+		"services/app/overlays",
+		"services/app/overlays/development",
+		"services/app/overlays/production/region-a",
+	}
+	for _, directory := range manifestDirs {
+		path := filepath.Join(root, filepath.FromSlash(directory))
+		require.NoError(t, os.MkdirAll(path, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(path, FileName), []byte(kustomizationFixture), 0o644))
+	}
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "services/app/overlays/without-manifest"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".git/objects"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".git/objects", FileName), []byte("ignored"), 0o644))
+
+	matches, err := NewPatcher().Resolve(context.Background(), root, "services/app/overlays/**")
+	require.NoError(t, err)
+	assert.Equal(t, manifestDirs, matches)
+}
+
+func TestPatcher_ResolveRejectsSymlinkedPrefix(t *testing.T) {
+	t.Parallel()
+
+	outside := t.TempDir()
+	outsideManifest := filepath.Join(outside, "app/production")
+	require.NoError(t, os.MkdirAll(outsideManifest, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(outsideManifest, FileName), []byte(kustomizationFixture), 0o644))
+
+	root := t.TempDir()
+	require.NoError(t, os.Symlink(outside, filepath.Join(root, "services")))
+
+	_, err := NewPatcher().Resolve(context.Background(), root, "services/app/**")
+	require.ErrorIs(t, err, model.ErrInvalidManifest)
+}
+
+func TestPatcher_ResolveReportsNoRecursiveMatch(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewPatcher().Resolve(context.Background(), t.TempDir(), "services/**/production")
+	require.ErrorIs(t, err, model.ErrManifestNotFound)
+}
+
 func TestPatcher_PatchReportsAMissingFile(t *testing.T) {
 	t.Parallel()
 
 	err := NewPatcher().Patch(context.Background(), t.TempDir(), model.ImageUpdate{Image: testImage, NewTag: "abc1234"})
 	require.ErrorIs(t, err, model.ErrManifestNotFound)
+}
+
+func TestPatcher_PatchRejectsSymlinkedManifest(t *testing.T) {
+	t.Parallel()
+
+	outside := filepath.Join(t.TempDir(), FileName)
+	require.NoError(t, os.WriteFile(outside, []byte(kustomizationFixture), 0o644))
+	dir := t.TempDir()
+	require.NoError(t, os.Symlink(outside, filepath.Join(dir, FileName)))
+
+	err := NewPatcher().Patch(context.Background(), dir, model.ImageUpdate{
+		Image:  testImage,
+		NewTag: "alice.1111111111111111111111111111111111111111",
+	})
+	require.ErrorIs(t, err, model.ErrInvalidManifest)
+
+	after, readErr := os.ReadFile(outside)
+	require.NoError(t, readErr)
+	assert.Equal(t, kustomizationFixture, string(after))
 }
 
 func TestPatcher_PatchIndentsTheMetadataBlock(t *testing.T) {
@@ -298,7 +362,7 @@ func TestPatcher_PatchIndentsTheMetadataBlock(t *testing.T) {
 			nested: "#     - image: " + testImage + "\n",
 		},
 		{
-			// YAML emitter が honour しない値は既定に落とす。
+			// Fall back to the default for values the YAML emitter does not honor.
 			name:   "使えない値は既定に落ちる",
 			opts:   []Option{WithIndent(1)},
 			nested: "#   - image: " + testImage + "\n",

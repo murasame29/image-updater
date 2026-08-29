@@ -42,26 +42,69 @@ func Run(ctx context.Context, timeout time.Duration, apps ...Application) error 
 	defer stop()
 
 	group, groupCtx := errgroup.WithContext(signalCtx)
+	runFailures := make(chan error, len(apps))
 
 	for _, app := range apps {
 		group.Go(func() error {
 			slog.InfoContext(groupCtx, "starting", slog.String("component", app.Name()))
 			if err := app.Run(groupCtx); err != nil {
-				return fmt.Errorf("%s: %w", app.Name(), err)
+				wrapped := fmt.Errorf("%s: %w", app.Name(), err)
+				// Publish before returning: errgroup only exposes the error after every
+				// sibling exits, which is too late to start the shutdown deadline.
+				runFailures <- wrapped
+				return wrapped
 			}
 			return nil
 		})
 	}
 
-	runErr := group.Wait()
+	runDone := make(chan error, 1)
+	go func() { runDone <- group.Wait() }()
 
-	// The run context is already cancelled by now, so the shutdown gets a
-	// context of its own to give in-flight work a chance to finish.
+	var runErr error
+	waitForRun := false
+	select {
+	case runErr = <-runDone:
+	case runErr = <-runFailures:
+		waitForRun = true
+	case <-signalCtx.Done():
+		waitForRun = true
+	}
+
+	// The timeout starts as soon as shutdown begins and bounds both Run draining
+	// and Shutdown, regardless of which one caused the lifecycle to stop.
 	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
 
-	shutdownErr := shutdown(shutdownCtx, apps)
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- shutdown(shutdownCtx, apps) }()
 
+	var shutdownErr error
+	var runCh <-chan error
+	if waitForRun {
+		runCh = runDone
+	}
+	shutdownCh := (<-chan error)(shutdownDone)
+
+	for runCh != nil || shutdownCh != nil {
+		select {
+		case runErr = <-runCh:
+			runCh = nil
+		case shutdownErr = <-shutdownCh:
+			shutdownCh = nil
+		case <-shutdownCtx.Done():
+			timeoutErr := fmt.Errorf("lifecycle: shutdown did not complete within %s: %w", timeout, shutdownCtx.Err())
+			if errors.Is(runErr, context.Canceled) {
+				runErr = nil
+			}
+			return errors.Join(runErr, shutdownErr, timeoutErr)
+		}
+	}
+
+	return finish(ctx, runErr, shutdownErr)
+}
+
+func finish(ctx context.Context, runErr, shutdownErr error) error {
 	if runErr != nil && !errors.Is(runErr, context.Canceled) {
 		return runErr
 	}

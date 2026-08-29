@@ -44,7 +44,7 @@ func (l LogLevel) ToSlog() slog.Level {
 	}
 }
 
-// Config is the whole application configuration, grouped by concern.
+// Config is the whole environment configuration, grouped by concern.
 type Config struct {
 	App    App
 	GitHub GitHub
@@ -147,6 +147,21 @@ func (c Config) validate() error {
 
 	if len(missing) > 0 {
 		return fmt.Errorf("these variables are required but empty: %s", strings.Join(missing, ", "))
+	}
+
+	switch {
+	case c.App.Concurrency < 1 || c.App.Concurrency > 10:
+		return fmt.Errorf("CONCURRENCY has to be between 1 and 10, got %d", c.App.Concurrency)
+	case c.App.PollInterval < 0:
+		return fmt.Errorf("INTERVAL must not be negative, got %s", c.App.PollInterval)
+	case c.App.ShutdownTimeout <= 0:
+		return fmt.Errorf("SHUTDOWN_TIMEOUT has to be positive, got %s", c.App.ShutdownTimeout)
+	case c.AWS.MaxMessages < 1 || c.AWS.MaxMessages > 10:
+		return fmt.Errorf("AWS_QUEUE_MAX_MESSAGES has to be between 1 and 10, got %d", c.AWS.MaxMessages)
+	case c.AWS.VisibilityTimeout < 1 || c.AWS.VisibilityTimeout > 43200:
+		return fmt.Errorf("AWS_QUEUE_VISIBILITY_TIMEOUT has to be between 1 and 43200, got %d", c.AWS.VisibilityTimeout)
+	case c.AWS.WaitTime < 1 || c.AWS.WaitTime > 20:
+		return fmt.Errorf("AWS_QUEUE_WAIT_TIME has to be between 1 and 20, got %d", c.AWS.WaitTime)
 	}
 
 	// The YAML emitter silently falls back to two spaces outside this range, so

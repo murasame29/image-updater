@@ -108,6 +108,24 @@ func (p *fakePatcher) Patch(_ context.Context, dir string, update model.ImageUpd
 	return p.err
 }
 
+// fakeDirectoryResolver expands configured patterns and leaves literals alone.
+type fakeDirectoryResolver struct {
+	matches  map[string][]string
+	patterns []string
+	err      error
+}
+
+func (r *fakeDirectoryResolver) Resolve(_ context.Context, _, pattern string) ([]string, error) {
+	r.patterns = append(r.patterns, pattern)
+	if r.err != nil {
+		return nil, r.err
+	}
+	if matches, exists := r.matches[pattern]; exists {
+		return append([]string(nil), matches...), nil
+	}
+	return []string{pattern}, nil
+}
+
 // fakeResolver returns fixed metadata or a failure.
 type fakeResolver struct {
 	metadata model.ImageMetadata
@@ -165,6 +183,18 @@ func testMetadata() model.ImageMetadata {
 	}
 }
 
+func testMessageRenderer(t *testing.T) *MessageRenderer {
+	t.Helper()
+
+	renderer, err := NewMessageRenderer(MessageTemplates{
+		PullRequestTitle: "[{{.Environment}}][Image Updater][{{.ImageName}}] Update image",
+		PullRequestBody:  "{{.DefaultBody}}",
+		CommitMessage:    "[{{.Environment}}][image-committer][{{.ImageRepository}}] Update image",
+	})
+	require.NoError(t, err)
+	return renderer
+}
+
 // newService builds the use case over the fakes, returning them for assertions.
 func newService(t *testing.T, resolver model.MetadataResolver, opts ...Option) (*Service, *fakeRepository, *fakePatcher) {
 	t.Helper()
@@ -172,7 +202,16 @@ func newService(t *testing.T, resolver model.MetadataResolver, opts ...Option) (
 	repository := &fakeRepository{checkout: &fakeCheckout{dir: t.TempDir()}}
 	patcher := &fakePatcher{}
 
-	service, err := NewService(testRuleSet(t), resolver, repository, patcher, opts...)
+	directories := &fakeDirectoryResolver{}
+	service, err := NewService(
+		testRuleSet(t),
+		resolver,
+		repository,
+		directories,
+		patcher,
+		testMessageRenderer(t),
+		opts...,
+	)
 	require.NoError(t, err)
 
 	return service, repository, patcher
@@ -189,13 +228,36 @@ func TestService_Handle(t *testing.T) {
 	t.Parallel()
 
 	service, repository, patcher := newAnnotatingService(t, fakeResolver{metadata: testMetadata()})
+	groupedRules, err := model.NewRuleSet([]model.Rule{
+		{
+			ImagePattern: testRegistry + "/apps/$1/$2",
+			ManifestURL:  "https://github.com/example-org/example-manifests/services/$1/$2/overlays/development",
+			Env:          "development",
+			DenyTags:     []string{"latest"},
+		},
+		{
+			ImagePattern: testRegistry + "/apps/$1/$2",
+			ManifestURL:  "https://github.com/Example-Org/Example-Manifests/clusters/primary/$1/$2",
+			Env:          "development",
+			DenyTags:     []string{"latest"},
+		},
+	})
+	require.NoError(t, err)
+	service.rules = groupedRules
+	service.messages, err = NewMessageRenderer(MessageTemplates{
+		PullRequestTitle: "[{{.Environment}}][Image Updater][{{.ImageName}}] イメージの更新",
+		PullRequestBody:  "## 📦 イメージ更新\\n\\n環境: {{.Environment}}\\n\\n{{.DefaultBody}}",
+		CommitMessage:    "[{{.Environment}}][image-committer][{{.ImageRepository}}] イメージの更新",
+	})
+	require.NoError(t, err)
 
 	require.NoError(t, service.Handle(context.Background(), testPushEvent(testTag)))
 
-	const branch = "image_updater_platform_image-updater_development_" + testTag
+	require.Len(t, repository.checkout.branches, 1)
+	branch := repository.checkout.branches[0]
+	assert.Contains(t, branch, "image_updater_platform_image-updater_development_"+testTag+"_")
 
 	assert.Equal(t, []string{"https://github.com/example-org/example-manifests"}, repository.checkedOut)
-	assert.Equal(t, []string{branch}, repository.checkout.branches)
 	assert.Equal(t,
 		[]string{"[development][image-committer][apps/platform/image-updater] イメージの更新"},
 		repository.checkout.commits,
@@ -203,14 +265,19 @@ func TestService_Handle(t *testing.T) {
 	assert.Equal(t, []string{branch}, repository.checkout.pushes)
 	assert.True(t, repository.checkout.closed, "the working copy has to be removed")
 
-	require.Len(t, patcher.updates, 1)
-	assert.Equal(t, testRegistry+"/apps/platform/image-updater", patcher.updates[0].Image)
-	assert.Equal(t, testTag, patcher.updates[0].NewTag)
-	require.NotNil(t, patcher.updates[0].Manifest, "the annotation is on, so the image manifest is written")
-	assert.Equal(t, "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678", patcher.updates[0].Manifest.GitSHA)
+	require.Len(t, patcher.updates, 2)
+	for _, update := range patcher.updates {
+		assert.Equal(t, testRegistry+"/apps/platform/image-updater", update.Image)
+		assert.Equal(t, testTag, update.NewTag)
+		require.NotNil(t, update.Manifest, "the annotation is on, so the image manifest is written")
+		assert.Equal(t, "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678", update.Manifest.GitSHA)
+	}
 
 	assert.Equal(t,
-		[]string{filepath.Join(repository.checkout.dir, "services/platform/image-updater/overlays/development")},
+		[]string{
+			filepath.Join(repository.checkout.dir, "clusters/primary/platform/image-updater"),
+			filepath.Join(repository.checkout.dir, "services/platform/image-updater/overlays/development"),
+		},
 		patcher.dirs,
 	)
 
@@ -222,7 +289,49 @@ func TestService_Handle(t *testing.T) {
 	assert.Equal(t, "[development][Image Updater][platform/image-updater] イメージの更新", pr.Title)
 	assert.Equal(t, []string{"octocat"}, pr.Assignees)
 	assert.Equal(t, []string{"octocat"}, pr.Reviewers)
+	assert.Contains(t, pr.Body, "## 📦 イメージ更新")
+	assert.Contains(t, pr.Body, "環境: development")
 	assert.Contains(t, pr.Body, "a1b2c3")
+}
+
+func TestService_HandleExpandsRecursiveManifestTargets(t *testing.T) {
+	t.Parallel()
+
+	service, repository, patcher := newService(t, nil)
+	const pattern = "services/platform/image-updater/overlays/**"
+	directories := service.directories.(*fakeDirectoryResolver)
+	directories.matches = map[string][]string{
+		pattern: {
+			"services/platform/image-updater/overlays/production",
+			"services/platform/image-updater/overlays/development",
+		},
+	}
+
+	rules, err := model.NewRuleSet([]model.Rule{
+		{
+			ImagePattern: testRegistry + "/apps/$1/$2",
+			ManifestURL:  "https://github.com/example-org/example-manifests/services/$1/$2/overlays/**",
+			Env:          "development",
+		},
+		{
+			ImagePattern: testRegistry + "/apps/$1/$2",
+			ManifestURL:  "https://github.com/example-org/example-manifests/services/$1/$2/overlays/production",
+			Env:          "development",
+		},
+	})
+	require.NoError(t, err)
+	service.rules = rules
+
+	require.NoError(t, service.Handle(context.Background(), testPushEvent(testTag)))
+
+	assert.Equal(t, []string{pattern, "services/platform/image-updater/overlays/production"}, directories.patterns)
+	assert.Equal(t, []string{
+		filepath.Join(repository.checkout.dir, "services/platform/image-updater/overlays/development"),
+		filepath.Join(repository.checkout.dir, "services/platform/image-updater/overlays/production"),
+	}, patcher.dirs)
+	assert.Len(t, patcher.updates, 2, "the explicit and wildcard overlap must be patched once")
+	assert.Len(t, repository.checkout.commits, 1)
+	assert.Len(t, repository.pullRequests, 1)
 }
 
 func TestService_HandleRejectsBeforeTouchingTheRepository(t *testing.T) {
@@ -368,7 +477,7 @@ func TestService_HandleClassifiesFailures(t *testing.T) {
 			}
 			assert.Len(t, repository.pullRequests, tt.wantPRCount)
 
-			if repository.checkoutErr == nil {
+			if repository.checkoutErr == nil && len(repository.checkedOut) > 0 {
 				assert.True(t, repository.checkout.closed, "the working copy has to be removed on failure too")
 			}
 		})
@@ -413,8 +522,10 @@ func TestService_HandleRecoversAnOrphanBranch(t *testing.T) {
 
 	require.NoError(t, service.Handle(context.Background(), testPushEvent(testTag)))
 
-	const branch = "image_updater_platform_image-updater_development_" + testTag
-	assert.Equal(t, []string{branch}, repository.lookups, "the branch has to be looked up before giving up")
+	const branch = "image_updater_platform_image-updater_development_" + testTag + "_9064d17dcefdcdb5"
+	const legacyBranch = "image_updater_platform_image-updater_development_" + testTag
+	assert.Equal(t, []string{branch, legacyBranch, branch, legacyBranch}, repository.lookups,
+		"current and legacy branches are checked before checkout and after the rejected push")
 	require.Len(t, repository.pullRequests, 1, "the pull request has to be opened on the second attempt")
 	assert.Equal(t, branch, repository.pullRequests[0].Head)
 }
@@ -439,7 +550,7 @@ func TestService_HandleWithoutImageLabelAnnotation(t *testing.T) {
 	pr := repository.pullRequests[0]
 	assert.Empty(t, pr.Assignees)
 	assert.Empty(t, pr.Reviewers)
-	assert.Equal(t, "[development][Image Updater][platform/image-updater] イメージの更新", pr.Title)
+	assert.Equal(t, "[development][Image Updater][platform/image-updater] Update image", pr.Title)
 	assert.Equal(t, "## 📦 Image Update\n\n", pr.Body, "the body carries only the header")
 }
 
@@ -459,8 +570,15 @@ func TestService_HandleSkipsTheImageManifestWhenDisabled(t *testing.T) {
 	patcher := &fakePatcher{}
 
 	// The annotation is on globally, so this asserts the rule opting out on its own.
-	service, err := NewService(rules, fakeResolver{metadata: testMetadata()}, repository, patcher,
-		WithImageLabelAnnotation(true))
+	service, err := NewService(
+		rules,
+		fakeResolver{metadata: testMetadata()},
+		repository,
+		&fakeDirectoryResolver{},
+		patcher,
+		testMessageRenderer(t),
+		WithImageLabelAnnotation(true),
+	)
 	require.NoError(t, err)
 
 	require.NoError(t, service.Handle(context.Background(), testPushEvent(testTag)))
@@ -474,26 +592,31 @@ func TestNewService(t *testing.T) {
 
 	rules := testRuleSet(t)
 	repository := &fakeRepository{checkout: &fakeCheckout{}}
+	directories := &fakeDirectoryResolver{}
 	patcher := &fakePatcher{}
+	messages := testMessageRenderer(t)
 
 	tests := []struct {
-		name      string
-		rules     model.RuleSet
-		manifests model.ManifestRepository
-		patcher   model.ManifestPatcher
-		wantErr   bool
+		name        string
+		rules       model.RuleSet
+		manifests   model.ManifestRepository
+		directories model.ManifestDirectoryResolver
+		patcher     model.ManifestPatcher
+		messages    *MessageRenderer
+		wantErr     bool
 	}{
-		{name: "有効な組み合わせ", rules: rules, manifests: repository, patcher: patcher},
-		{name: "ルールが空なら拒否", manifests: repository, patcher: patcher, wantErr: true},
-		{name: "manifest repository が nil なら拒否", rules: rules, patcher: patcher, wantErr: true},
-		{name: "patcher が nil なら拒否", rules: rules, manifests: repository, wantErr: true},
+		{name: "有効な組み合わせ", rules: rules, manifests: repository, directories: directories, patcher: patcher, messages: messages},
+		{name: "ルールが空なら拒否", manifests: repository, directories: directories, patcher: patcher, messages: messages, wantErr: true},
+		{name: "manifest repository が nil なら拒否", rules: rules, directories: directories, patcher: patcher, messages: messages, wantErr: true},
+		{name: "directory resolver が nil なら拒否", rules: rules, manifests: repository, patcher: patcher, messages: messages, wantErr: true},
+		{name: "patcher が nil なら拒否", rules: rules, manifests: repository, directories: directories, messages: messages, wantErr: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := NewService(tt.rules, nil, tt.manifests, tt.patcher)
+			_, err := NewService(tt.rules, nil, tt.manifests, tt.directories, tt.patcher, tt.messages)
 			if tt.wantErr {
 				require.Error(t, err)
 				return
