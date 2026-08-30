@@ -1,0 +1,5 @@
+image-updater Helm chart
+Copyright 2024-2026 murasame29
+
+The chart is licensed under Apache License 2.0 and references, but does not bundle,
+the separately distributed image-updater container image.

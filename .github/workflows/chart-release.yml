@@ -217,7 +217,7 @@ jobs:
         with:
           version: v3.21.4
 
-      - name: Package chart once or adopt reserved asset
+      - name: Package or adopt and validate chart asset
         shell: bash
         run: |
           test "$(gh release view "${GITHUB_REF_NAME}" --json isDraft --jq .isDraft)" = true
@@ -225,15 +225,23 @@ jobs:
             --jq '[.assets[] | select(.name == env.ASSET_NAME)] | length')"
           if [[ "${asset_count}" == "1" ]]; then
             echo "adopting existing chart asset: ${ASSET_NAME}"
-            exit 0
-          fi
-          if [[ "${asset_count}" != "0" ]]; then
+            gh release download "${GITHUB_REF_NAME}" \
+              --pattern "${ASSET_NAME}" \
+              --dir "${RUNNER_TEMP}"
+          elif [[ "${asset_count}" == "0" ]]; then
+            helm package "${CHART_PATH}" --destination "${RUNNER_TEMP}"
+          else
             echo "unexpected number of matching chart assets: ${asset_count}" >&2
             exit 1
           fi
 
-          helm package "${CHART_PATH}" --destination "${RUNNER_TEMP}"
-          gh release upload "${GITHUB_REF_NAME}" "${RUNNER_TEMP}/${ASSET_NAME}"
+          bash hack/check_chart_package.sh \
+            "${RUNNER_TEMP}/${ASSET_NAME}" \
+            "${CHART_PATH}"
+
+          if [[ "${asset_count}" == "0" ]]; then
+            gh release upload "${GITHUB_REF_NAME}" "${RUNNER_TEMP}/${ASSET_NAME}"
+          fi
 
   publish-chart:
     needs: [validate, package-chart]
@@ -247,6 +255,9 @@ jobs:
       CHART_VERSION: ${{ needs.validate.outputs.chart_version }}
       ASSET_NAME: image-updater-${{ needs.validate.outputs.chart_version }}.tgz
     steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
@@ -257,6 +268,12 @@ jobs:
           gh release download "${GITHUB_REF_NAME}"
           --pattern "${ASSET_NAME}"
           --dir "${RUNNER_TEMP}"
+
+      - name: Validate reserved chart package
+        run: >-
+          bash hack/check_chart_package.sh
+          "${RUNNER_TEMP}/${ASSET_NAME}"
+          "${CHART_PATH}"
 
       - name: Log in to GHCR
         run: >-

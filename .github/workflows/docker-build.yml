@@ -8,6 +8,10 @@ on:
       - '**/go.mod'
       - '**/go.sum'
       - 'Dockerfile'
+      - 'LICENSE'
+      - 'NOTICE'
+      - 'THIRD_PARTY_NOTICES.md'
+      - 'hack/check_licenses.sh'
       - '.github/workflows/docker-build.yml'
   push:
     branches: [master]
@@ -17,6 +21,10 @@ on:
       - '**/go.mod'
       - '**/go.sum'
       - 'Dockerfile'
+      - 'LICENSE'
+      - 'NOTICE'
+      - 'THIRD_PARTY_NOTICES.md'
+      - 'hack/check_licenses.sh'
       - '.github/workflows/docker-build.yml'
 
 permissions:
@@ -31,6 +39,24 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  license:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check licenses
+        run: bash hack/check_licenses.sh
+
   validate:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
@@ -121,7 +147,7 @@ jobs:
 
   reserve-release:
     if: github.ref_type == 'tag'
-    needs: prepare
+    needs: [license, prepare]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -198,10 +224,11 @@ jobs:
           gh release create "${release_args[@]}"
 
   publish:
-    needs: [prepare, reserve-release]
+    needs: [license, prepare, reserve-release]
     if: >-
       always() &&
       github.event_name == 'push' &&
+      needs.license.result == 'success' &&
       needs.prepare.result == 'success' &&
       (github.ref_type == 'branch' || needs.reserve-release.result == 'success')
     runs-on: ubuntu-24.04
@@ -228,10 +255,6 @@ jobs:
             type=raw,value=edge,enable=${{ github.ref_type == 'branch' }}
             type=sha,format=long,enable=${{ github.ref_type == 'branch' }}
             type=semver,pattern={{version}},enable=${{ github.ref_type == 'tag' }}
-          labels: |
-            org.opencontainers.image.created=${{ needs.prepare.outputs.build_date }}
-            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
-            org.opencontainers.image.revision=${{ github.sha }}
 
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -285,7 +308,10 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.metadata.outputs.tags }}
-          labels: ${{ steps.metadata.outputs.labels }}
+          labels: |
+            org.opencontainers.image.created=${{ needs.prepare.outputs.build_date }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
           build-args: |
             VERSION=${{ needs.prepare.outputs.version }}
             COMMIT=${{ github.sha }}

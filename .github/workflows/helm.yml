@@ -7,6 +7,7 @@ on:
       - 'charts/**'
       - 'example/values.example.yaml'
       - 'README.md'
+      - 'hack/check_chart_package.sh'
       - '.github/workflows/helm.yml'
       - '.github/workflows/chart-release.yml'
   push:
@@ -15,6 +16,7 @@ on:
       - 'charts/**'
       - 'example/values.example.yaml'
       - 'README.md'
+      - 'hack/check_chart_package.sh'
       - '.github/workflows/helm.yml'
       - '.github/workflows/chart-release.yml'
 
@@ -268,5 +270,16 @@ jobs:
             fi
           done
 
-      - name: Package chart
-        run: helm package charts/image-updater --destination "${RUNNER_TEMP}"
+      - name: Package chart and verify license material
+        shell: bash
+        run: |
+          helm package charts/image-updater --destination "${RUNNER_TEMP}"
+
+          shopt -s nullglob
+          archives=("${RUNNER_TEMP}"/image-updater-*.tgz)
+          if [[ ${#archives[@]} -ne 1 ]]; then
+            echo "expected exactly one packaged chart, found ${#archives[@]}" >&2
+            exit 1
+          fi
+
+          bash hack/check_chart_package.sh "${archives[0]}" charts/image-updater

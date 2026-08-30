@@ -1,0 +1,59 @@
+name: License
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '**/*.go'
+      - '**/go.mod'
+      - '**/go.sum'
+      - 'Dockerfile'
+      - 'LICENSE'
+      - 'NOTICE'
+      - 'THIRD_PARTY_NOTICES.md'
+      - 'charts/image-updater/LICENSE'
+      - 'charts/image-updater/NOTICE'
+      - 'charts/image-updater/Chart.yaml'
+      - 'hack/check_licenses.sh'
+      - '.github/workflows/docker-build.yml'
+      - '.github/workflows/license.yml'
+  push:
+    branches: [master]
+    paths:
+      - '**/*.go'
+      - '**/go.mod'
+      - '**/go.sum'
+      - 'Dockerfile'
+      - 'LICENSE'
+      - 'NOTICE'
+      - 'THIRD_PARTY_NOTICES.md'
+      - 'charts/image-updater/LICENSE'
+      - 'charts/image-updater/NOTICE'
+      - 'charts/image-updater/Chart.yaml'
+      - 'hack/check_licenses.sh'
+      - '.github/workflows/docker-build.yml'
+      - '.github/workflows/license.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: license-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check licenses
+        run: bash hack/check_licenses.sh
