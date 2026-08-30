@@ -1,0 +1,29 @@
+# Copy this file, replace every example value, and keep credentials in Kubernetes Secrets.
+image:
+  tag: latest
+
+aws:
+  region: ap-northeast-1
+  queueURI: https://sqs.ap-northeast-1.amazonaws.com/123456789012/image-updater
+
+github:
+  applicationID: "123456"
+  installationID: "12345678"
+  username: image-updater
+  authorEmail: image-updater@users.noreply.github.com
+  baseBranch: main
+  existingSecret: image-updater-github
+  privateKeyKey: private-key.pem
+
+config:
+  existingConfigMap: image-updater-rules
+  key: config.yaml
+
+serviceAccount:
+  annotations:
+    # For EKS IRSA. Remove this entry when using another AWS credential provider.
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/image-updater
+
+# Configure this when the GHCR package requires authentication.
+# imagePullSecrets:
+#   - name: ghcr-credentials

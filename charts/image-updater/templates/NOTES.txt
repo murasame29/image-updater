@@ -1,0 +1,8 @@
+image-updater has been installed in namespace {{ .Release.Namespace }}.
+
+Check the worker:
+  kubectl --namespace {{ .Release.Namespace }} get pods -l 'app.kubernetes.io/name={{ include "image-updater.name" . }},app.kubernetes.io/instance={{ .Release.Name }}'
+
+The application reads its rules and GitHub App private key at startup. Restart the
+Deployment after changing an externally managed ConfigMap or Secret:
+  kubectl --namespace {{ .Release.Namespace }} rollout restart deployment/{{ include "image-updater.fullname" . }}

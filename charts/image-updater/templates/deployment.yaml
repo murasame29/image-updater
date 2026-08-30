@@ -1,0 +1,134 @@
+{{- if ge (int .Values.runtime.shutdownTimeoutSeconds) (int .Values.terminationGracePeriodSeconds) }}
+{{- fail "terminationGracePeriodSeconds must be greater than runtime.shutdownTimeoutSeconds" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "image-updater.fullname" . | quote }}
+  labels:
+    {{- include "image-updater.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "image-updater.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "image-updater.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "image-updater.serviceAccountName" . | quote }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: image-updater
+          image: {{ include "image-updater.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: CONFIG_PATH
+              value: /etc/image-updater/config.yaml
+            - name: AWS_REGION
+              value: {{ required "aws.region is required" .Values.aws.region | quote }}
+            - name: AWS_QUEUE_URI
+              value: {{ required "aws.queueURI is required" .Values.aws.queueURI | quote }}
+            - name: AWS_QUEUE_WAIT_TIME
+              value: {{ .Values.aws.queueWaitTime | quote }}
+            - name: AWS_QUEUE_VISIBILITY_TIMEOUT
+              value: {{ .Values.aws.queueVisibilityTimeout | quote }}
+            - name: AWS_QUEUE_MAX_MESSAGES
+              value: {{ .Values.aws.queueMaxMessages | quote }}
+            - name: GITHUB_APPLICATION_ID
+              value: {{ required "github.applicationID is required" .Values.github.applicationID | quote }}
+            - name: GITHUB_INSTALLATION_ID
+              value: {{ required "github.installationID is required" .Values.github.installationID | quote }}
+            - name: GITHUB_USERNAME
+              value: {{ required "github.username is required" .Values.github.username | quote }}
+            - name: GITHUB_CRT_PATH
+              value: /etc/image-updater/private-key.pem
+            {{- with .Values.github.authorEmail }}
+            - name: GITHUB_AUTHOR_EMAIL
+              value: {{ . | quote }}
+            {{- end }}
+            - name: GITHUB_BASE_BRANCH
+              value: {{ .Values.github.baseBranch | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.runtime.logLevel | quote }}
+            - name: INTERVAL
+              value: {{ printf "%ds" (.Values.runtime.intervalSeconds | int) | quote }}
+            - name: CONCURRENCY
+              value: {{ .Values.runtime.concurrency | quote }}
+            - name: SHUTDOWN_TIMEOUT
+              value: {{ printf "%ds" (.Values.runtime.shutdownTimeoutSeconds | int) | quote }}
+            - name: IMAGE_LABEL_ANNOTATION_ENABLED
+              value: {{ .Values.runtime.imageLabelAnnotationEnabled | quote }}
+            - name: IMAGE_MANIFEST_INDENT
+              value: {{ .Values.runtime.imageManifestIndent | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/image-updater/config.yaml
+              subPath: config.yaml
+              readOnly: true
+            - name: github-private-key
+              mountPath: /etc/image-updater/private-key.pem
+              subPath: private-key.pem
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "image-updater.configMapName" . | quote }}
+            defaultMode: 0444
+            items:
+              - key: {{ .Values.config.key | quote }}
+                path: config.yaml
+        - name: github-private-key
+          secret:
+            secretName: {{ required "github.existingSecret is required" .Values.github.existingSecret | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.github.privateKeyKey | quote }}
+                path: private-key.pem
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.tmp.sizeLimit }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

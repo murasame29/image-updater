@@ -57,10 +57,41 @@ flowchart LR
 
 ## Installation
 
-> [!NOTE]
-> **TODO:** Helm Chartによるdeploymentに対応する。Chartとinstallation手順は別PRで追加予定。
+container imageは`ghcr.io/murasame29/image-updater`で配信する。default branchのbuildは
+`latest`と`sha-<full commit SHA>`、`vX.Y.Z` tagは`X.Y.Z`と`X.Y`としてpublishされる。
+`example/values.example.yaml`はquick start用に`latest`を使う。registry tagは移動可能なため、
+厳密な再現性が必要なproduction deploymentでは`image.digest`へ固定する。
+
+Helm Chartは`charts/image-updater`に同梱している。EKSではlong-lived AWS credentialsをPodへ
+渡さず、IRSAまたはEKS Pod Identityの利用を推奨する。GitHub App private keyはHelm valuesへ
+埋め込まず、既存のKubernetes Secretからmountする。
+
+```bash
+kubectl create namespace image-updater
+
+cp example/config.example.yaml config.yaml
+# config.yamlのregistryURI、githubRepository、environmentを環境に合わせて編集する
+
+kubectl --namespace image-updater create configmap image-updater-rules \
+  --from-file=config.yaml=config.yaml
+
+kubectl --namespace image-updater create secret generic image-updater-github \
+  --from-file=private-key.pem=/path/to/github-app-private-key.pem
+
+cp example/values.example.yaml values.yaml
+# values.yamlのSQS URI、GitHub App ID、AWS identityを環境に合わせて編集する
+
+helm upgrade --install image-updater ./charts/image-updater \
+  --namespace image-updater \
+  --values values.yaml
+```
+
+Chartはrulesをinline ConfigMapとして生成する方法と、`config.existingConfigMap`で既存ConfigMapを
+参照する方法をサポートする。外部管理のConfigMapまたはSecretを更新した場合は、起動時に再読込
+されるようDeploymentをrestartする。private GHCR packageを利用する場合は`imagePullSecrets`を設定する。
 
 設定方法: [日本語](./docs/ja/configuration.md) / [English](./docs/en/configuration.md)
+Helm values: [`charts/image-updater/values.yaml`](./charts/image-updater/values.yaml)
 
 ## Contribution
 
