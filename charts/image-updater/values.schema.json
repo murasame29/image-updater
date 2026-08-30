@@ -1,0 +1,278 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["config", "aws", "github"],
+  "definitions": {
+    "kubernetesName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)*$"
+    },
+    "optionalKubernetesName": {
+      "anyOf": [
+        {"type": "string", "maxLength": 0},
+        {"$ref": "#/definitions/kubernetesName"}
+      ]
+    },
+    "kubernetesLabel": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$"
+    },
+    "optionalKubernetesLabel": {
+      "anyOf": [
+        {"type": "string", "maxLength": 0},
+        {"$ref": "#/definitions/kubernetesLabel"}
+      ]
+    },
+    "stringCoercibleScalar": {
+      "anyOf": [
+        {"type": "string"},
+        {"type": "number"},
+        {"type": "boolean"}
+      ]
+    },
+    "nullableStringCoercibleScalar": {
+      "anyOf": [
+        {"type": "null"},
+        {"$ref": "#/definitions/stringCoercibleScalar"}
+      ]
+    },
+    "nonBlankStringCoercibleScalar": {
+      "anyOf": [
+        {"type": "string", "minLength": 1, "pattern": "[^ \\t\\r\\n]"},
+        {"type": "number"},
+        {"type": "boolean"}
+      ]
+    },
+    "messageTemplateValue": {
+      "anyOf": [
+        {"type": "null"},
+        {"type": "string", "minLength": 1, "maxLength": 65536, "pattern": "[^ \\t\\r\\n]"},
+        {"type": "number"},
+        {"type": "boolean"}
+      ]
+    },
+    "applicationMessages": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "pullRequestTitle": {"$ref": "#/definitions/messageTemplateValue"},
+        "pullRequestBody": {"$ref": "#/definitions/messageTemplateValue"},
+        "commitMessage": {"$ref": "#/definitions/messageTemplateValue"}
+      }
+    },
+    "applicationRule": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["registryURI", "githubRepository", "environment"],
+      "not": {"required": ["env"]},
+      "properties": {
+        "registryURI": {"type": "string", "minLength": 3, "pattern": "/"},
+        "githubRepository": {
+          "type": "string",
+          "allOf": [
+            {"pattern": "^https://github\\.com/"},
+            {"not": {"pattern": "[?#]"}}
+          ]
+        },
+        "environment": {"$ref": "#/definitions/nonBlankStringCoercibleScalar"},
+        "allowImageTag": {"$ref": "#/definitions/nullableStringCoercibleScalar"},
+        "denyImageTag": {
+          "anyOf": [
+            {"type": "null"},
+            {"type": "array", "items": {"$ref": "#/definitions/nullableStringCoercibleScalar"}}
+          ]
+        },
+        "imageManifest": {
+          "anyOf": [
+            {"type": "null"},
+            {"type": "boolean"},
+            {
+              "type": "string",
+              "enum": [
+                "y", "Y", "yes", "Yes", "YES", "on", "On", "ON",
+                "n", "N", "no", "No", "NO", "off", "Off", "OFF"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "applicationConfig": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["rules"],
+      "properties": {
+        "messages": {
+          "anyOf": [
+            {"type": "null"},
+            {"$ref": "#/definitions/applicationMessages"}
+          ]
+        },
+        "rules": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/definitions/applicationRule"}
+        }
+      }
+    }
+  },
+  "properties": {
+    "replicaCount": {"type": "integer", "minimum": 1},
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "pullPolicy", "tag", "digest"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]},
+        "tag": {"type": "string"},
+        "digest": {
+          "type": "string",
+          "anyOf": [
+            {"maxLength": 0},
+            {"pattern": "^sha256:[a-f0-9]{64}$"}
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "tag": {"minLength": 1},
+            "digest": {"maxLength": 0}
+          }
+        },
+        {
+          "properties": {
+            "tag": {"maxLength": 0},
+            "digest": {"pattern": "^sha256:[a-f0-9]{64}$"}
+          }
+        }
+      ]
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {"name": {"$ref": "#/definitions/kubernetesName"}}
+      }
+    },
+    "nameOverride": {"$ref": "#/definitions/optionalKubernetesLabel"},
+    "fullnameOverride": {"$ref": "#/definitions/optionalKubernetesLabel"},
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["existingConfigMap", "key", "inline"],
+      "properties": {
+        "existingConfigMap": {"$ref": "#/definitions/optionalKubernetesName"},
+        "key": {"type": "string", "minLength": 1, "maxLength": 253, "pattern": "^[A-Za-z0-9._-]+$"},
+        "inline": {"type": "object"}
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "existingConfigMap": {"maxLength": 0},
+            "inline": {"$ref": "#/definitions/applicationConfig"}
+          }
+        },
+        {
+          "properties": {
+            "existingConfigMap": {"minLength": 1},
+            "inline": {"type": "object", "maxProperties": 0}
+          }
+        }
+      ]
+    },
+    "aws": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["region", "queueURI", "queueWaitTime", "queueVisibilityTimeout", "queueMaxMessages"],
+      "properties": {
+        "region": {"type": "string", "minLength": 1},
+        "queueURI": {"type": "string", "minLength": 1},
+        "queueWaitTime": {"type": "integer", "minimum": 1, "maximum": 20},
+        "queueVisibilityTimeout": {"type": "integer", "minimum": 1, "maximum": 43200},
+        "queueMaxMessages": {"type": "integer", "minimum": 1, "maximum": 10}
+      }
+    },
+    "github": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["applicationID", "installationID", "username", "authorEmail", "baseBranch", "secretKeyRef"],
+      "properties": {
+        "applicationID": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+        "installationID": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+        "username": {"type": "string", "minLength": 1},
+        "authorEmail": {"type": "string"},
+        "baseBranch": {"type": "string", "minLength": 1},
+        "secretKeyRef": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "key"],
+          "properties": {
+            "name": {"$ref": "#/definitions/kubernetesName"},
+            "key": {"type": "string", "minLength": 1, "maxLength": 253, "pattern": "^[A-Za-z0-9._-]+$"}
+          }
+        }
+      }
+    },
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["logLevel", "intervalSeconds", "concurrency", "shutdownTimeoutSeconds", "imageLabelAnnotationEnabled", "imageManifestIndent"],
+      "properties": {
+        "logLevel": {"type": "string", "enum": ["debug", "info", "warn", "error"]},
+        "intervalSeconds": {"type": "integer", "minimum": 0, "maximum": 86400},
+        "concurrency": {"type": "integer", "minimum": 1, "maximum": 10},
+        "shutdownTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+        "imageLabelAnnotationEnabled": {"type": "boolean"},
+        "imageManifestIndent": {"type": "integer", "minimum": 1, "maximum": 8}
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["create", "automountServiceAccountToken", "annotations", "name"],
+      "properties": {
+        "create": {"type": "boolean"},
+        "automountServiceAccountToken": {"type": "boolean"},
+        "annotations": {"type": "object", "additionalProperties": {"type": "string"}},
+        "name": {"$ref": "#/definitions/optionalKubernetesName"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"create": {"const": false}}},
+          "then": {
+            "properties": {
+              "name": {"minLength": 1},
+              "annotations": {"maxProperties": 0}
+            }
+          }
+        }
+      ]
+    },
+    "podAnnotations": {"type": "object", "additionalProperties": {"type": "string"}},
+    "podSecurityContext": {"type": "object", "additionalProperties": true},
+    "securityContext": {"type": "object", "additionalProperties": true},
+    "resources": {"type": "object", "additionalProperties": true},
+    "tmp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sizeLimit"],
+      "properties": {"sizeLimit": {"type": "string", "minLength": 1}}
+    },
+    "terminationGracePeriodSeconds": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+    "revisionHistoryLimit": {"type": "integer", "minimum": 0},
+    "priorityClassName": {"$ref": "#/definitions/optionalKubernetesName"},
+    "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}},
+    "tolerations": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+    "affinity": {"type": "object", "additionalProperties": true},
+    "extraEnv": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+    "extraEnvFrom": {"type": "array", "items": {"type": "object", "additionalProperties": true}}
+  }
+}

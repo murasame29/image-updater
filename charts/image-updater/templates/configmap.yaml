@@ -1,0 +1,11 @@
+{{- if not .Values.config.existingConfigMap }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "image-updater.fullname" . | quote }}
+  labels:
+    {{- include "image-updater.labels" . | nindent 4 }}
+data:
+  {{ .Values.config.key | quote }}: |-
+    {{- required "config.inline is required when config.existingConfigMap is empty" .Values.config.inline | toYaml | nindent 4 }}
+{{- end }}

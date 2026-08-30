@@ -1,0 +1,31 @@
+image:
+  tag: latest
+
+config:
+  inline:
+    messages:
+      pullRequestTitle: '[{{.Environment}}] update {{.ImageName}}'
+      pullRequestBody: 'Update {{.Image}} to {{.ImageTag}}'
+      commitMessage: 'Update {{.ImageRepository}}'
+    rules:
+      - registryURI: 123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/apps/$1
+        githubRepository: https://github.com/example-org/manifests/apps/$1/overlays/**
+        allowImageTag: regexp:^[0-9a-f]{7,40}$
+        denyImageTag: [latest, main]
+        environment: staging
+
+aws:
+  region: ap-northeast-1
+  queueURI: https://sqs.ap-northeast-1.amazonaws.com/123456789012/image-updater
+
+github:
+  applicationID: "123456"
+  installationID: "12345678"
+  username: image-updater
+  secretKeyRef:
+    name: image-updater-github
+    key: private-key.pem
+
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/image-updater

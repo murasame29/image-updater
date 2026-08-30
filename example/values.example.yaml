@@ -1,0 +1,46 @@
+# Copy this file, replace every example value, and keep credentials in Kubernetes Secrets.
+image:
+  tag: latest
+
+config:
+  inline:
+    messages:
+      pullRequestTitle: '[{{.Environment}}][Image Updater][{{.ImageName}}] イメージの更新'
+      pullRequestBody: |-
+        ## イメージの更新
+
+        | 項目 | 値 |
+        | --- | --- |
+        | 環境 | {{.Environment}} |
+        | イメージ | {{.Image}} |
+        | タグ | {{.ImageTag}} |
+      commitMessage: '[{{.Environment}}][image-committer][{{.ImageRepository}}] イメージの更新'
+    rules:
+      - registryURI: 123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/apps/$1/$2/$3
+        githubRepository: https://github.com/example-org/example-manifests/services/$1/$2/$3/overlays/**
+        allowImageTag: regexp:^[0-9a-f]{7,40}$
+        denyImageTag: [latest, main]
+        environment: staging
+
+aws:
+  region: ap-northeast-1
+  queueURI: https://sqs.ap-northeast-1.amazonaws.com/123456789012/image-updater
+
+github:
+  applicationID: "123456"
+  installationID: "12345678"
+  username: image-updater
+  authorEmail: image-updater@users.noreply.github.com
+  baseBranch: main
+  secretKeyRef:
+    name: image-updater-github
+    key: private-key.pem
+
+serviceAccount:
+  annotations:
+    # For EKS IRSA. Remove this entry when using another AWS credential provider.
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/image-updater
+
+# Configure this when the GHCR package requires authentication.
+# imagePullSecrets:
+#   - name: ghcr-credentials

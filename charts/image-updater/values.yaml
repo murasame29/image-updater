@@ -1,0 +1,97 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/murasame29/image-updater
+  pullPolicy: Always
+  # Set exactly one of tag or digest. Production installs should use an immutable value.
+  tag: ""
+  digest: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+config:
+  # Set exactly one of existingConfigMap or inline.
+  existingConfigMap: ""
+  key: config.yaml
+  # The config.yaml document. It is serialized into a ConfigMap without template evaluation.
+  inline: {}
+
+aws:
+  region: ""
+  queueURI: ""
+  queueWaitTime: 20
+  queueVisibilityTimeout: 20
+  queueMaxMessages: 10
+
+github:
+  applicationID: ""
+  installationID: ""
+  username: ""
+  authorEmail: ""
+  baseBranch: main
+  # The private key must be supplied by a Kubernetes Secret key reference.
+  secretKeyRef:
+    name: ""
+    key: private-key.pem
+
+settings:
+  logLevel: info
+  # Whole seconds; interval may be zero and both values are capped at one day.
+  intervalSeconds: 10
+  concurrency: 10
+  shutdownTimeoutSeconds: 30
+  imageLabelAnnotationEnabled: false
+  imageManifestIndent: 2
+
+serviceAccount:
+  create: true
+  # IRSA injects its own projected token; the worker does not call the Kubernetes API.
+  automountServiceAccountToken: false
+  annotations: {}
+  # Required when create is false. Annotations must already exist on that account.
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+    ephemeral-storage: 256Mi
+  limits:
+    memory: 512Mi
+    ephemeral-storage: 2Gi
+
+tmp:
+  sizeLimit: 2Gi
+
+# Keep this greater than settings.shutdownTimeoutSeconds so in-flight work can stop cleanly.
+terminationGracePeriodSeconds: 45
+revisionHistoryLimit: 3
+
+priorityClassName: ""
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Prefer valueFrom/secretRef entries instead of literal secrets.
+extraEnv: []
+extraEnvFrom: []
