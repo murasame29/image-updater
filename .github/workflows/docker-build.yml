@@ -10,7 +10,6 @@ on:
       - 'Dockerfile'
       - 'LICENSE'
       - 'NOTICE'
-      - 'THIRD_PARTY_NOTICES.md'
       - 'hack/check_licenses.sh'
       - '.github/workflows/docker-build.yml'
   push:
@@ -23,7 +22,6 @@ on:
       - 'Dockerfile'
       - 'LICENSE'
       - 'NOTICE'
-      - 'THIRD_PARTY_NOTICES.md'
       - 'hack/check_licenses.sh'
       - '.github/workflows/docker-build.yml'
 

@@ -145,13 +145,12 @@ versionを示す。
 ## License
 
 image-updater本体は[Apache License 2.0](./LICENSE)で公開しています。project固有のnoticeは
-[`NOTICE`](./NOTICE)、依存関係・runtime base・配布境界の監査結果は
-[`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md)を参照してください。各third-party componentには
-それぞれのlicenseが引き続き適用されます。
+[`NOTICE`](./NOTICE)を参照してください。各third-party componentには、それぞれのlicenseが引き続き
+適用されます。
 
 公開container imageは、実際にbuildされたGo package graphのcomponent一覧とlicense全文を
-`/licenses`へ格納します。Helm Chart archiveはrepository rootから独立して再配布できるよう、Chart自身の
-`LICENSE`と`NOTICE`を同梱します。
+`/licenses`へ格納します。runtime baseのcopyright情報は`/usr/share/doc`に保持されます。
+Helm Chart archiveはrepository rootから独立して再配布できるよう、Chart自身の`LICENSE`と`NOTICE`を同梱します。
 
 ## Contribution
 

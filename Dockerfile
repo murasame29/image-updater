@@ -63,7 +63,7 @@ RUN CGO_ENABLED=0 go build \
     securejoin_notices=(/build/licenses/third_party/github.com/cyphar/filepath-securejoin/*) && \
     [[ ${#securejoin_notices[@]} -eq 1 ]] && \
     [[ "${securejoin_notices[0]##*/}" == 'LICENSE.BSD' ]] && \
-    cp LICENSE NOTICE THIRD_PARTY_NOTICES.md /build/licenses/image-updater/
+    cp LICENSE NOTICE /build/licenses/image-updater/
 
 # prod
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
