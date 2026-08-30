@@ -1,7 +1,4 @@
 # Copy this file, replace every example value, and keep credentials in Kubernetes Secrets.
-image:
-  tag: latest
-
 config:
   inline:
     messages:

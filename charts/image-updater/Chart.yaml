@@ -3,7 +3,7 @@ name: image-updater
 description: Event-driven Git write-back image updater for Kubernetes GitOps workflows
 type: application
 version: 0.1.0
-appVersion: latest
+appVersion: "0.1.0"
 home: https://github.com/murasame29/image-updater
 sources:
   - https://github.com/murasame29/image-updater

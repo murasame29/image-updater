@@ -137,21 +137,7 @@
             {"pattern": "^sha256:[a-f0-9]{64}$"}
           ]
         }
-      },
-      "oneOf": [
-        {
-          "properties": {
-            "tag": {"minLength": 1},
-            "digest": {"maxLength": 0}
-          }
-        },
-        {
-          "properties": {
-            "tag": {"maxLength": 0},
-            "digest": {"pattern": "^sha256:[a-f0-9]{64}$"}
-          }
-        }
-      ]
+      }
     },
     "imagePullSecrets": {
       "type": "array",
