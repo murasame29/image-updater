@@ -2,7 +2,7 @@ image:
   tag: latest
 
 config:
-  data: |-
+  inline:
     messages:
       pullRequestTitle: '[{{.Environment}}] update {{.ImageName}}'
       pullRequestBody: 'Update {{.Image}} to {{.ImageTag}}'
@@ -22,7 +22,9 @@ github:
   applicationID: "123456"
   installationID: "12345678"
   username: image-updater
-  existingSecret: image-updater-github
+  secretKeyRef:
+    name: image-updater-github
+    key: private-key.pem
 
 serviceAccount:
   annotations:

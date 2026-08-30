@@ -54,7 +54,7 @@ jobs:
           helm template image-updater charts/image-updater
           --namespace image-updater
           --values charts/image-updater/ci/test-values.yaml
-          --set-string config.data=
+          --set-json 'config.inline={}'
           --set-string config.existingConfigMap=image-updater-rules
           > "${RUNNER_TEMP}/image-updater-existing-configmap.yaml"
 
@@ -76,28 +76,104 @@ jobs:
             --values example/values.example.yaml \
             > "${RUNNER_TEMP}/image-updater-example.yaml"
 
+      - name: Assert rendered configuration contract
+        run: |
+          inline_manifest="${RUNNER_TEMP}/image-updater-inline.yaml"
+          external_manifest="${RUNNER_TEMP}/image-updater-existing-configmap.yaml"
+
+          grep --fixed-strings --quiet '{{.Environment}}' "${inline_manifest}"
+          test "$(grep --line-regexp --count 'kind: ConfigMap' "${inline_manifest}")" -eq 1
+
+          assert_env() {
+            local name="$1"
+            local value="$2"
+            grep --after-context=1 -- "- name: ${name}" "${inline_manifest}" \
+              | grep --fixed-strings --quiet "value: ${value}"
+          }
+          assert_env LOG_LEVEL '"info"'
+          assert_env INTERVAL '"10s"'
+          assert_env CONCURRENCY '"10"'
+          assert_env SHUTDOWN_TIMEOUT '"30s"'
+          assert_env IMAGE_LABEL_ANNOTATION_ENABLED '"false"'
+          assert_env IMAGE_MANIFEST_INDENT '"2"'
+
+          grep --after-context=10 -- '- name: github-private-key' "${inline_manifest}" \
+            | grep --fixed-strings --quiet 'secretName: "image-updater-github"'
+          grep --after-context=10 -- '- name: github-private-key' "${inline_manifest}" \
+            | grep --fixed-strings --quiet -- '- key: "private-key.pem"'
+
+          if grep --line-regexp --quiet 'kind: ConfigMap' "${external_manifest}"; then
+            echo 'generated ConfigMap was rendered in external ConfigMap mode' >&2
+            exit 1
+          fi
+          grep --fixed-strings --quiet 'name: "image-updater-rules"' "${external_manifest}"
+
       - name: Reject invalid values
         run: |
           helm template image-updater charts/image-updater \
             --namespace image-updater \
             --values charts/image-updater/ci/test-values.yaml \
-            --set runtime.intervalSeconds=0 \
+            --set settings.intervalSeconds=0 \
             > "${RUNNER_TEMP}/image-updater-zero-interval.yaml"
           if helm lint charts/image-updater --strict \
             --values charts/image-updater/ci/test-values.yaml \
-            --set runtime.intervalSeconds=86401; then
+            --set-string config.existingConfigMap=image-updater-rules; then
+            echo 'inline and existing ConfigMap sources were both accepted' >&2
+            exit 1
+          fi
+          if helm lint charts/image-updater --strict \
+            --values charts/image-updater/ci/test-values.yaml \
+            --set-json 'config.inline={}'; then
+            echo 'missing ConfigMap source was accepted' >&2
+            exit 1
+          fi
+          if helm lint charts/image-updater --strict \
+            --values charts/image-updater/ci/test-values.yaml \
+            --set-json 'config.inline={"typo":"accepted"}'; then
+            echo 'inline config without rules was accepted' >&2
+            exit 1
+          fi
+          for secret_path in github.secretKeyRef.name github.secretKeyRef.key; do
+            if helm lint charts/image-updater --strict \
+              --values charts/image-updater/ci/test-values.yaml \
+              --set-string "${secret_path}="; then
+              echo "empty Secret reference was accepted at ${secret_path}" >&2
+              exit 1
+            fi
+          done
+          if helm lint charts/image-updater --strict \
+            --values charts/image-updater/ci/test-values.yaml \
+            --set-string github.secretKeyRef.key='invalid key'; then
+            echo 'invalid Secret key was accepted' >&2
+            exit 1
+          fi
+          for legacy_path in \
+            config.data \
+            runtime.intervalSeconds \
+            github.existingSecret \
+            github.privateKeyKey; do
+            if helm lint charts/image-updater --strict \
+              --values charts/image-updater/ci/test-values.yaml \
+              --set-string "${legacy_path}=legacy"; then
+              echo "legacy value was accepted at ${legacy_path}" >&2
+              exit 1
+            fi
+          done
+          if helm lint charts/image-updater --strict \
+            --values charts/image-updater/ci/test-values.yaml \
+            --set settings.intervalSeconds=86401; then
             echo 'out-of-range interval was accepted' >&2
             exit 1
           fi
           if helm lint charts/image-updater --strict \
             --values charts/image-updater/ci/test-values.yaml \
-            --set runtime.shutdownTimeoutSeconds=0; then
+            --set settings.shutdownTimeoutSeconds=0; then
             echo 'zero shutdown timeout was accepted' >&2
             exit 1
           fi
           if helm template image-updater charts/image-updater \
             --values charts/image-updater/ci/test-values.yaml \
-            --set runtime.shutdownTimeoutSeconds=45 \
+            --set settings.shutdownTimeoutSeconds=45 \
             --set terminationGracePeriodSeconds=45; then
             echo 'shutdown timeout without a grace margin was accepted' >&2
             exit 1
@@ -123,13 +199,13 @@ jobs:
           overlong_name="${valid_key}a"
           if helm lint charts/image-updater --strict \
             --values charts/image-updater/ci/test-values.yaml \
-            --set-string config.data= \
+            --set-json 'config.inline={}' \
             --set-string config.existingConfigMap="${overlong_name}"; then
             echo 'overlong ConfigMap name was accepted' >&2
             exit 1
           fi
           for name_path in \
-            github.existingSecret \
+            github.secretKeyRef.name \
             'imagePullSecrets[0].name' \
             serviceAccount.name \
             priorityClassName; do

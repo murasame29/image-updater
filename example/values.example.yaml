@@ -2,6 +2,26 @@
 image:
   tag: latest
 
+config:
+  inline:
+    messages:
+      pullRequestTitle: '[{{.Environment}}][Image Updater][{{.ImageName}}] イメージの更新'
+      pullRequestBody: |-
+        ## イメージの更新
+
+        | 項目 | 値 |
+        | --- | --- |
+        | 環境 | {{.Environment}} |
+        | イメージ | {{.Image}} |
+        | タグ | {{.ImageTag}} |
+      commitMessage: '[{{.Environment}}][image-committer][{{.ImageRepository}}] イメージの更新'
+    rules:
+      - registryURI: 123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/apps/$1/$2/$3
+        githubRepository: https://github.com/example-org/example-manifests/services/$1/$2/$3/overlays/**
+        allowImageTag: regexp:^[0-9a-f]{7,40}$
+        denyImageTag: [latest, main]
+        environment: staging
+
 aws:
   region: ap-northeast-1
   queueURI: https://sqs.ap-northeast-1.amazonaws.com/123456789012/image-updater
@@ -12,12 +32,9 @@ github:
   username: image-updater
   authorEmail: image-updater@users.noreply.github.com
   baseBranch: main
-  existingSecret: image-updater-github
-  privateKeyKey: private-key.pem
-
-config:
-  existingConfigMap: image-updater-rules
-  key: config.yaml
+  secretKeyRef:
+    name: image-updater-github
+    key: private-key.pem
 
 serviceAccount:
   annotations:

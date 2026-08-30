@@ -69,26 +69,21 @@ Helm Chartは`charts/image-updater`に同梱している。EKSではlong-lived A
 ```bash
 kubectl create namespace image-updater
 
-cp example/config.example.yaml config.yaml
-# config.yamlのregistryURI、githubRepository、environmentを環境に合わせて編集する
-
-kubectl --namespace image-updater create configmap image-updater-rules \
-  --from-file=config.yaml=config.yaml
-
 kubectl --namespace image-updater create secret generic image-updater-github \
   --from-file=private-key.pem=/path/to/github-app-private-key.pem
 
 cp example/values.example.yaml values.yaml
-# values.yamlのSQS URI、GitHub App ID、AWS identityを環境に合わせて編集する
+# values.yamlのconfig.inline、SQS URI、GitHub App ID、AWS identityを環境に合わせて編集する
 
 helm upgrade --install image-updater ./charts/image-updater \
   --namespace image-updater \
   --values values.yaml
 ```
 
-Chartはrulesをinline ConfigMapとして生成する方法と、`config.existingConfigMap`で既存ConfigMapを
-参照する方法をサポートする。外部管理のConfigMapまたはSecretを更新した場合は、起動時に再読込
-されるようDeploymentをrestartする。private GHCR packageを利用する場合は`imagePullSecrets`を設定する。
+Chartは`config.inline`からconfig.yamlを生成する方法と、`config.existingConfigMap`で既存ConfigMapを
+参照する方法をサポートする。GitHub App private keyは`github.secretKeyRef.name/key`で参照する。
+外部管理のConfigMapまたはSecretを更新した場合は、起動時に再読込されるようDeploymentをrestartする。
+private GHCR packageを利用する場合は`imagePullSecrets`を設定する。
 
 設定方法: [日本語](./docs/ja/configuration.md) / [English](./docs/en/configuration.md)
 Helm values: [`charts/image-updater/values.yaml`](./charts/image-updater/values.yaml)

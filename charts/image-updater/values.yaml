@@ -12,10 +12,11 @@ nameOverride: ""
 fullnameOverride: ""
 
 config:
-  # Set exactly one of existingConfigMap or data.
+  # Set exactly one of existingConfigMap or inline.
   existingConfigMap: ""
   key: config.yaml
-  data: ""
+  # The config.yaml document. It is serialized into a ConfigMap without template evaluation.
+  inline: {}
 
 aws:
   region: ""
@@ -30,11 +31,12 @@ github:
   username: ""
   authorEmail: ""
   baseBranch: main
-  # The private key must be supplied by an existing Secret.
-  existingSecret: ""
-  privateKeyKey: private-key.pem
+  # The private key must be supplied by a Kubernetes Secret key reference.
+  secretKeyRef:
+    name: ""
+    key: private-key.pem
 
-runtime:
+settings:
   logLevel: info
   # Whole seconds; interval may be zero and both values are capped at one day.
   intervalSeconds: 10
@@ -81,7 +83,7 @@ resources:
 tmp:
   sizeLimit: 2Gi
 
-# Keep this greater than runtime.shutdownTimeout so in-flight work can stop cleanly.
+# Keep this greater than settings.shutdownTimeoutSeconds so in-flight work can stop cleanly.
 terminationGracePeriodSeconds: 45
 revisionHistoryLimit: 3
 

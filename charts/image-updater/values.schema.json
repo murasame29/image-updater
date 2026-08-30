@@ -26,6 +26,98 @@
         {"type": "string", "maxLength": 0},
         {"$ref": "#/definitions/kubernetesLabel"}
       ]
+    },
+    "stringCoercibleScalar": {
+      "anyOf": [
+        {"type": "string"},
+        {"type": "number"},
+        {"type": "boolean"}
+      ]
+    },
+    "nullableStringCoercibleScalar": {
+      "anyOf": [
+        {"type": "null"},
+        {"$ref": "#/definitions/stringCoercibleScalar"}
+      ]
+    },
+    "nonBlankStringCoercibleScalar": {
+      "anyOf": [
+        {"type": "string", "minLength": 1, "pattern": "[^ \\t\\r\\n]"},
+        {"type": "number"},
+        {"type": "boolean"}
+      ]
+    },
+    "messageTemplateValue": {
+      "anyOf": [
+        {"type": "null"},
+        {"type": "string", "minLength": 1, "maxLength": 65536, "pattern": "[^ \\t\\r\\n]"},
+        {"type": "number"},
+        {"type": "boolean"}
+      ]
+    },
+    "applicationMessages": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "pullRequestTitle": {"$ref": "#/definitions/messageTemplateValue"},
+        "pullRequestBody": {"$ref": "#/definitions/messageTemplateValue"},
+        "commitMessage": {"$ref": "#/definitions/messageTemplateValue"}
+      }
+    },
+    "applicationRule": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["registryURI", "githubRepository", "environment"],
+      "not": {"required": ["env"]},
+      "properties": {
+        "registryURI": {"type": "string", "minLength": 3, "pattern": "/"},
+        "githubRepository": {
+          "type": "string",
+          "allOf": [
+            {"pattern": "^https://github\\.com/"},
+            {"not": {"pattern": "[?#]"}}
+          ]
+        },
+        "environment": {"$ref": "#/definitions/nonBlankStringCoercibleScalar"},
+        "allowImageTag": {"$ref": "#/definitions/nullableStringCoercibleScalar"},
+        "denyImageTag": {
+          "anyOf": [
+            {"type": "null"},
+            {"type": "array", "items": {"$ref": "#/definitions/nullableStringCoercibleScalar"}}
+          ]
+        },
+        "imageManifest": {
+          "anyOf": [
+            {"type": "null"},
+            {"type": "boolean"},
+            {
+              "type": "string",
+              "enum": [
+                "y", "Y", "yes", "Yes", "YES", "on", "On", "ON",
+                "n", "N", "no", "No", "NO", "off", "Off", "OFF"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "applicationConfig": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["rules"],
+      "properties": {
+        "messages": {
+          "anyOf": [
+            {"type": "null"},
+            {"$ref": "#/definitions/applicationMessages"}
+          ]
+        },
+        "rules": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/definitions/applicationRule"}
+        }
+      }
     }
   },
   "properties": {
@@ -75,23 +167,23 @@
     "config": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["existingConfigMap", "key", "data"],
+      "required": ["existingConfigMap", "key", "inline"],
       "properties": {
         "existingConfigMap": {"$ref": "#/definitions/optionalKubernetesName"},
         "key": {"type": "string", "minLength": 1, "maxLength": 253, "pattern": "^[A-Za-z0-9._-]+$"},
-        "data": {"type": "string"}
+        "inline": {"type": "object"}
       },
       "oneOf": [
         {
           "properties": {
             "existingConfigMap": {"maxLength": 0},
-            "data": {"minLength": 1}
+            "inline": {"$ref": "#/definitions/applicationConfig"}
           }
         },
         {
           "properties": {
             "existingConfigMap": {"minLength": 1},
-            "data": {"maxLength": 0}
+            "inline": {"type": "object", "maxProperties": 0}
           }
         }
       ]
@@ -111,18 +203,25 @@
     "github": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["applicationID", "installationID", "username", "authorEmail", "baseBranch", "existingSecret", "privateKeyKey"],
+      "required": ["applicationID", "installationID", "username", "authorEmail", "baseBranch", "secretKeyRef"],
       "properties": {
         "applicationID": {"type": "string", "pattern": "^[1-9][0-9]*$"},
         "installationID": {"type": "string", "pattern": "^[1-9][0-9]*$"},
         "username": {"type": "string", "minLength": 1},
         "authorEmail": {"type": "string"},
         "baseBranch": {"type": "string", "minLength": 1},
-        "existingSecret": {"$ref": "#/definitions/kubernetesName"},
-        "privateKeyKey": {"type": "string", "minLength": 1, "maxLength": 253, "pattern": "^[A-Za-z0-9._-]+$"}
+        "secretKeyRef": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "key"],
+          "properties": {
+            "name": {"$ref": "#/definitions/kubernetesName"},
+            "key": {"type": "string", "minLength": 1, "maxLength": 253, "pattern": "^[A-Za-z0-9._-]+$"}
+          }
+        }
       }
     },
-    "runtime": {
+    "settings": {
       "type": "object",
       "additionalProperties": false,
       "required": ["logLevel", "intervalSeconds", "concurrency", "shutdownTimeoutSeconds", "imageLabelAnnotationEnabled", "imageManifestIndent"],

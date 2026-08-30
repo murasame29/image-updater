@@ -1,5 +1,5 @@
-{{- if ge (int .Values.runtime.shutdownTimeoutSeconds) (int .Values.terminationGracePeriodSeconds) }}
-{{- fail "terminationGracePeriodSeconds must be greater than runtime.shutdownTimeoutSeconds" }}
+{{- if ge (int .Values.settings.shutdownTimeoutSeconds) (int .Values.terminationGracePeriodSeconds) }}
+{{- fail "terminationGracePeriodSeconds must be greater than settings.shutdownTimeoutSeconds" }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
@@ -71,17 +71,17 @@ spec:
             - name: GITHUB_BASE_BRANCH
               value: {{ .Values.github.baseBranch | quote }}
             - name: LOG_LEVEL
-              value: {{ .Values.runtime.logLevel | quote }}
+              value: {{ .Values.settings.logLevel | quote }}
             - name: INTERVAL
-              value: {{ printf "%ds" (.Values.runtime.intervalSeconds | int) | quote }}
+              value: {{ printf "%ds" (.Values.settings.intervalSeconds | int) | quote }}
             - name: CONCURRENCY
-              value: {{ .Values.runtime.concurrency | quote }}
+              value: {{ .Values.settings.concurrency | quote }}
             - name: SHUTDOWN_TIMEOUT
-              value: {{ printf "%ds" (.Values.runtime.shutdownTimeoutSeconds | int) | quote }}
+              value: {{ printf "%ds" (.Values.settings.shutdownTimeoutSeconds | int) | quote }}
             - name: IMAGE_LABEL_ANNOTATION_ENABLED
-              value: {{ .Values.runtime.imageLabelAnnotationEnabled | quote }}
+              value: {{ .Values.settings.imageLabelAnnotationEnabled | quote }}
             - name: IMAGE_MANIFEST_INDENT
-              value: {{ .Values.runtime.imageManifestIndent | quote }}
+              value: {{ .Values.settings.imageManifestIndent | quote }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -112,10 +112,10 @@ spec:
                 path: config.yaml
         - name: github-private-key
           secret:
-            secretName: {{ required "github.existingSecret is required" .Values.github.existingSecret | quote }}
+            secretName: {{ required "github.secretKeyRef.name is required" .Values.github.secretKeyRef.name | quote }}
             defaultMode: 0440
             items:
-              - key: {{ .Values.github.privateKeyKey | quote }}
+              - key: {{ .Values.github.secretKeyRef.key | quote }}
                 path: private-key.pem
         - name: tmp
           emptyDir:
