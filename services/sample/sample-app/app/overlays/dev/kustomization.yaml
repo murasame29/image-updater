@@ -1,6 +1,0 @@
-namespace: samples
-images:
-- name: 211125717884.dkr.ecr.ap-northeast-1.amazonaws.com/example/sample/sample-app/app
-  newTag: 3a977e3003842f387d9732e07ff5051687197d1d
-resources:
-- ../../base/

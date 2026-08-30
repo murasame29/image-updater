@@ -1,0 +1,20 @@
+# The current runtime receives ECR push events through EventBridge and SQS.
+# Event transport is configured separately; this file maps events to GitOps targets and messages.
+messages:
+  pullRequestTitle: '[{{.Environment}}][Image Updater][{{.ImageName}}] イメージの更新'
+  pullRequestBody: |-
+    ## イメージの更新
+
+    | 項目 | 値 |
+    | --- | --- |
+    | 環境 | {{.Environment}} |
+    | イメージ | {{.Image}} |
+    | タグ | {{.ImageTag}} |
+  commitMessage: '[{{.Environment}}][image-committer][{{.ImageRepository}}] イメージの更新'
+
+rules:
+  - registryURI: 123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/apps/$1/$2/$3
+    githubRepository: https://github.com/example-org/example-manifests/services/$1/$2/$3/overlays/**
+    allowImageTag: regexp:^[0-9a-f]{7,40}$
+    denyImageTag: [latest, main]
+    environment: staging
