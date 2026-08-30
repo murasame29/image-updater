@@ -4,16 +4,6 @@
 GitOps manifest のイメージ参照を更新する役割を持ち、コンテナレジストリの image push
 イベントを起点に GitHub PR を作る、event-driven（push型）の Git write-back ツール。
 
-## Why
-
-Argo CD Image Updater に近い役割を、registry tag polling ではなく push event を起点として実現する。
-もともとは [argocd-image-updater のレジストリタグ解決に関する問題](https://github.com/argoproj-labs/argocd-image-updater/issues/657)
-を回避するため、**レジストリが送る push イベントをそのまま更新候補として扱う**方式を選んだ。
-
-- registry tag discovery の定期 poll を待たず、イベントの repository と tag を更新候補にできる
-- 「どのイメージが push されたか」をイベントから受け取るため、タグの推測が要らない
-- 更新は PR になるため、レビューと revert を通常の Git 操作で行える
-
 ## What
 
 1. ECR の push イベントを EventBridge と SQS 経由で受け取る
