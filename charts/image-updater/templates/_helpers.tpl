@@ -50,11 +50,11 @@ app.kubernetes.io/instance: {{ .Release.Name | quote }}
 {{- default (include "image-updater.fullname" .) .Values.config.existingConfigMap }}
 {{- end }}
 
-{{/* Container image reference. */}}
+{{/* Container image reference. Digest takes priority; an empty tag uses appVersion. */}}
 {{- define "image-updater.image" -}}
 {{- if .Values.image.digest }}
 {{- printf "%s@%s" .Values.image.repository .Values.image.digest }}
 {{- else }}
-{{- printf "%s:%s" .Values.image.repository (required "image.tag is required when image.digest is empty" .Values.image.tag) }}
+{{- printf "%s:%s" .Values.image.repository (required "Chart.appVersion or image.tag is required when image.digest is empty" (default .Chart.AppVersion .Values.image.tag)) }}
 {{- end }}
 {{- end }}

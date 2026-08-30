@@ -3,7 +3,7 @@ replicaCount: 1
 image:
   repository: ghcr.io/murasame29/image-updater
   pullPolicy: Always
-  # Set exactly one of tag or digest. Production installs should use an immutable value.
+  # Empty tag defaults to Chart.appVersion. Digest takes priority over tag and fallback.
   tag: ""
   digest: ""
 

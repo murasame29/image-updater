@@ -7,14 +7,18 @@ on:
       - 'charts/**'
       - 'example/values.example.yaml'
       - 'README.md'
+      - 'hack/check_chart_package.sh'
       - '.github/workflows/helm.yml'
+      - '.github/workflows/chart-release.yml'
   push:
     branches: [master]
     paths:
       - 'charts/**'
       - 'example/values.example.yaml'
       - 'README.md'
+      - 'hack/check_chart_package.sh'
       - '.github/workflows/helm.yml'
+      - '.github/workflows/chart-release.yml'
 
 permissions:
   contents: read
@@ -48,6 +52,23 @@ jobs:
           --namespace image-updater
           --values charts/image-updater/ci/test-values.yaml
           > "${RUNNER_TEMP}/image-updater-inline.yaml"
+
+      - name: Render explicit image tag
+        run: >-
+          helm template image-updater charts/image-updater
+          --namespace image-updater
+          --values charts/image-updater/ci/test-values.yaml
+          --set-string image.tag=0.1.1
+          > "${RUNNER_TEMP}/image-updater-explicit-tag.yaml"
+
+      - name: Render digest priority
+        run: >-
+          helm template image-updater charts/image-updater
+          --namespace image-updater
+          --values charts/image-updater/ci/test-values.yaml
+          --set-string image.tag=ignored
+          --set-string image.digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          > "${RUNNER_TEMP}/image-updater-digest.yaml"
 
       - name: Render existing ConfigMap configuration
         run: >-
@@ -83,6 +104,18 @@ jobs:
 
           grep --fixed-strings --quiet '{{.Environment}}' "${inline_manifest}"
           test "$(grep --line-regexp --count 'kind: ConfigMap' "${inline_manifest}")" -eq 1
+          grep --fixed-strings --quiet \
+            'image: "ghcr.io/murasame29/image-updater:0.1.0"' \
+            "${inline_manifest}"
+          grep --fixed-strings --quiet \
+            'app.kubernetes.io/version: "0.1.0"' \
+            "${inline_manifest}"
+          grep --fixed-strings --quiet \
+            'image: "ghcr.io/murasame29/image-updater:0.1.1"' \
+            "${RUNNER_TEMP}/image-updater-explicit-tag.yaml"
+          grep --fixed-strings --quiet \
+            'image: "ghcr.io/murasame29/image-updater@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' \
+            "${RUNNER_TEMP}/image-updater-digest.yaml"
 
           assert_env() {
             local name="$1"
@@ -110,6 +143,12 @@ jobs:
 
       - name: Reject invalid values
         run: |
+          if helm lint charts/image-updater --strict \
+            --values charts/image-updater/ci/test-values.yaml \
+            --set-string image.digest=sha256:not-a-digest; then
+            echo 'invalid image digest was accepted' >&2
+            exit 1
+          fi
           helm template image-updater charts/image-updater \
             --namespace image-updater \
             --values charts/image-updater/ci/test-values.yaml \
@@ -231,5 +270,16 @@ jobs:
             fi
           done
 
-      - name: Package chart
-        run: helm package charts/image-updater --destination "${RUNNER_TEMP}"
+      - name: Package chart and verify license material
+        shell: bash
+        run: |
+          helm package charts/image-updater --destination "${RUNNER_TEMP}"
+
+          shopt -s nullglob
+          archives=("${RUNNER_TEMP}"/image-updater-*.tgz)
+          if [[ ${#archives[@]} -ne 1 ]]; then
+            echo "expected exactly one packaged chart, found ${#archives[@]}" >&2
+            exit 1
+          fi
+
+          bash hack/check_chart_package.sh "${archives[0]}" charts/image-updater
