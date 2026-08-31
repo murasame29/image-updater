@@ -198,10 +198,14 @@ jobs:
             echo "exact image digest mismatch: ${resolved_digest}" >&2
             exit 1
           fi
+          image_metadata="$(docker buildx imagetools inspect \
+            "${source_image}" --format '{{json .Image}}')"
           for platform in linux/amd64 linux/arm64; do
-            docker pull --quiet --platform "${platform}" "${source_image}" >/dev/null
-            identity="$(docker image inspect --platform "${platform}" "${source_image}" \
-              --format '{{.Os}}|{{.Architecture}}|{{ index .Config.Labels "org.opencontainers.image.revision" }}|{{ index .Config.Labels "org.opencontainers.image.version" }}')"
+            identity="$(jq --raw-output --arg platform "${platform}" \
+              '[.[$platform].os // "", .[$platform].architecture // "", \
+                .[$platform].config.Labels["org.opencontainers.image.revision"] // "", \
+                .[$platform].config.Labels["org.opencontainers.image.version"] // ""] | join("|")' \
+              <<< "${image_metadata}")"
             IFS='|' read -r image_os image_arch revision image_version <<< "${identity}"
             if [[ "${image_os}/${image_arch}" != "${platform}" || \
               "${revision}" != "${EXPECTED_COMMIT}" || "${image_version}" != "${version}" ]]; then
