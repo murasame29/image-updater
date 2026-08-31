@@ -24,12 +24,31 @@ on:
       - 'NOTICE'
       - 'hack/check_licenses.sh'
       - '.github/workflows/docker-build.yml'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Stable application tag to recover (vX.Y.Z)
+        required: true
+        type: string
+      expected_commit:
+        description: Full commit SHA peeled from the annotated release tag
+        required: true
+        type: string
+      expected_digest:
+        description: Immutable sha256 digest of the existing exact image
+        required: true
+        type: string
+      migrate_legacy_aliases:
+        description: Permit migration of self-labeled legacy floating aliases
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
-  group: container-${{ github.ref_type == 'tag' && 'release' || github.ref }}
+  group: container-${{ (github.ref_type == 'tag' || github.event_name == 'workflow_dispatch') && 'release' || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -37,6 +56,209 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  recover-stable-release:
+    if: github.event_name == 'workflow_dispatch'
+    needs: license
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+      EXPECTED_DIGEST: ${{ inputs.expected_digest }}
+      MIGRATE_LEGACY_ALIASES: ${{ inputs.migrate_legacy_aliases }}
+    steps:
+      - name: Checkout recovery workflow revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify exact image and recover stable aliases
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" != 'branch' || "${GITHUB_REF_NAME}" != "${DEFAULT_BRANCH}" ]]; then
+            echo 'release recovery must use the reviewed default-branch workflow' >&2
+            exit 1
+          fi
+
+          stable_tag_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          if [[ ! "${RELEASE_TAG}" =~ ${stable_tag_pattern} ]]; then
+            echo "release_tag must be a stable SemVer tag: ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+          major="${BASH_REMATCH[1]}"
+          version="${RELEASE_TAG#v}"
+          if [[ ! "${EXPECTED_COMMIT}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'expected_commit must be a full lowercase commit SHA' >&2
+            exit 1
+          fi
+          if [[ ! "${EXPECTED_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo 'expected_digest must be a lowercase sha256 digest' >&2
+            exit 1
+          fi
+
+          git fetch --force --no-tags origin \
+            "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          if [[ "$(git cat-file -t "refs/tags/${RELEASE_TAG}")" != 'tag' ]]; then
+            echo "release tag must be annotated: ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+          tag_commit="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          if [[ "${tag_commit}" != "${EXPECTED_COMMIT}" ]]; then
+            echo "release tag commit mismatch: ${tag_commit}" >&2
+            exit 1
+          fi
+
+          marker="<!-- image-updater-release application commit=${EXPECTED_COMMIT} version=${version} -->"
+          body="$(gh release view "${RELEASE_TAG}" --json body --jq .body)"
+          is_draft="$(gh release view "${RELEASE_TAG}" --json isDraft --jq .isDraft)"
+          is_prerelease="$(gh release view "${RELEASE_TAG}" --json isPrerelease --jq .isPrerelease)"
+          if [[ "${body}" != *"${marker}"* || "${is_prerelease}" != 'false' ]]; then
+            echo 'GitHub Release does not match the requested stable release' >&2
+            exit 1
+          fi
+          if [[ "${is_draft}" != 'true' && "${is_draft}" != 'false' ]]; then
+            echo 'unable to determine GitHub Release state' >&2
+            exit 1
+          fi
+
+          exact_image="${REGISTRY}/${IMAGE_NAME}:${version}"
+          source_image="${REGISTRY}/${IMAGE_NAME}@${EXPECTED_DIGEST}"
+          resolved_digest="$(docker buildx imagetools inspect \
+            "${exact_image}" --format '{{.Manifest.Digest}}')"
+          if [[ "${resolved_digest}" != "${EXPECTED_DIGEST}" ]]; then
+            echo "exact image digest mismatch: ${resolved_digest}" >&2
+            exit 1
+          fi
+          for platform in linux/amd64 linux/arm64; do
+            docker pull --quiet --platform "${platform}" "${source_image}" >/dev/null
+            identity="$(docker image inspect --platform "${platform}" "${source_image}" \
+              --format '{{.Os}}|{{.Architecture}}|{{ index .Config.Labels "org.opencontainers.image.revision" }}|{{ index .Config.Labels "org.opencontainers.image.version" }}')"
+            IFS='|' read -r image_os image_arch revision image_version <<< "${identity}"
+            if [[ "${image_os}/${image_arch}" != "${platform}" || \
+              "${revision}" != "${EXPECTED_COMMIT}" || "${image_version}" != "${version}" ]]; then
+              echo "exact image identity mismatch (${platform}): ${identity}" >&2
+              exit 1
+            fi
+          done
+
+          minor="${version%.*}"
+          aliases=("${minor}" latest)
+          if [[ "${major}" != '0' ]]; then
+            aliases+=("${major}")
+          fi
+          stable_pattern='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          for alias in "${aliases[@]}"; do
+            alias_image="${REGISTRY}/${IMAGE_NAME}:${alias}"
+            set +e
+            current_digest="$(docker buildx imagetools inspect \
+              "${alias_image}" --format '{{.Manifest.Digest}}' 2>&1)"
+            lookup_status=$?
+            set -e
+            if [[ ${lookup_status} -eq 0 ]]; then
+              if [[ "${current_digest}" == "${EXPECTED_DIGEST}" ]]; then
+                echo "alias already points to the exact image: ${alias_image}"
+                continue
+              fi
+
+              docker pull --quiet --platform linux/amd64 "${alias_image}" >/dev/null
+              current_version="$(docker image inspect "${alias_image}" \
+                --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')"
+              if [[ "${current_version}" =~ ${stable_pattern} ]]; then
+                if [[ "${current_version}" == "${version}" ]]; then
+                  echo "alias conflicts with the exact release: ${alias_image}" >&2
+                  exit 1
+                fi
+                highest="$(printf '%s\n%s\n' "${current_version}" "${version}" \
+                  | sort --version-sort | tail -n 1)"
+                if [[ "${highest}" != "${version}" ]]; then
+                  echo "not regressing ${alias_image} from ${current_version} to ${version}"
+                  continue
+                fi
+              elif [[ "${MIGRATE_LEGACY_ALIASES}" == 'true' && "${current_version}" == "${alias}" ]]; then
+                echo "migrating self-labeled legacy alias: ${alias_image}"
+              else
+                echo "existing alias has unrecognized version metadata: ${alias_image}" >&2
+                exit 1
+              fi
+            elif ! grep --extended-regexp --ignore-case --quiet \
+              'manifest unknown|no such manifest|not found' <<< "${current_digest}"; then
+              echo "unable to resolve image alias: ${alias_image}" >&2
+              echo "${current_digest}" >&2
+              exit 1
+            fi
+
+            docker buildx imagetools create --tag "${alias_image}" "${source_image}"
+            recovered_digest="$(docker buildx imagetools inspect \
+              "${alias_image}" --format '{{.Manifest.Digest}}')"
+            if [[ "${recovered_digest}" != "${EXPECTED_DIGEST}" ]]; then
+              echo "recovered alias digest mismatch: ${alias_image}" >&2
+              exit 1
+            fi
+          done
+
+  finalize-recovered-release:
+    if: github.event_name == 'workflow_dispatch'
+    needs: recover-stable-release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+    steps:
+      - name: Publish recovered GitHub Release
+        shell: bash
+        run: |
+          version="${RELEASE_TAG#v}"
+          marker="<!-- image-updater-release application commit=${EXPECTED_COMMIT} version=${version} -->"
+          body="$(gh release view "${RELEASE_TAG}" --json body --jq .body)"
+          is_draft="$(gh release view "${RELEASE_TAG}" --json isDraft --jq .isDraft)"
+          is_prerelease="$(gh release view "${RELEASE_TAG}" --json isPrerelease --jq .isPrerelease)"
+          if [[ "${body}" != *"${marker}"* || "${is_prerelease}" != 'false' ]]; then
+            echo 'GitHub Release no longer matches the recovered stable release' >&2
+            exit 1
+          fi
+          if [[ "${is_draft}" == 'false' ]]; then
+            echo "GitHub Release is already published: ${RELEASE_TAG}"
+            exit 0
+          fi
+          if [[ "${is_draft}" != 'true' ]]; then
+            echo 'unable to determine GitHub Release state' >&2
+            exit 1
+          fi
+
+          highest_version="$({
+            gh release list --limit 1000 --json tagName,isDraft,isPrerelease \
+              --jq '.[] | select((.isDraft == false) and (.isPrerelease == false)) | .tagName' \
+              | sed --quiet --regexp-extended \
+                's/^v((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))$/\1/p'
+            echo "${version}"
+          } | sort --version-sort | tail -n 1)"
+          if [[ "${highest_version}" == "${version}" ]]; then
+            gh release edit "${RELEASE_TAG}" --draft=false --latest
+          else
+            gh release edit "${RELEASE_TAG}" --draft=false --latest=false
+            echo "not marking ${RELEASE_TAG} latest; highest stable version is ${highest_version}"
+          fi
+          test "$(gh release view "${RELEASE_TAG}" --json isDraft --jq .isDraft)" = false
+
   license:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
