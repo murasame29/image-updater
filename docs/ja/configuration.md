@@ -2,7 +2,7 @@
 
 English: [Configuration](../en/configuration.md)
 
-現在同梱しているruntimeは、ECRのimage push eventをEventBridgeとSQS経由で受信し、
+現在同梱しているruntimeは、ECRのimage push eventとreplication完了eventをEventBridgeとSQS経由で受信し、
 GitHub上の`kustomization.yaml`を更新する。event transportは環境変数、imageとmanifestの対応や
 PR messageは`config.yaml`で設定する。
 
@@ -18,7 +18,8 @@ PR messageは`config.yaml`で設定する。
 
 ## 前提
 
-- ECRのpush eventがEventBridge経由で届くSQS queue
+- ECRの`ECR Image Action`（push）または`ECR Replication Action`（cross-region replicationの完了）eventがEventBridge経由で届くSQS queue
+  - replication eventは宛先regionで発行され、registry hostも宛先regionで組み立てる。宛先regionのclusterで動かすinstanceは、宛先regionのqueueと`registryURI`を設定する
 - manifest repositoryへpushできるGitHub App
   - `contents: write`
   - `pull_requests: write`

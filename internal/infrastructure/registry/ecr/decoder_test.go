@@ -46,6 +46,45 @@ func TestDecoder_Decode(t *testing.T) {
 	)
 }
 
+// replicationPayload is the event ECR emits in the destination region once a
+// cross-region replication has landed. The shape follows the AWS sample.
+const replicationPayload = `{
+  "version": "0",
+  "id": "c8b133b1-6029-ee73-e2a1-4f466b8ba999",
+  "detail-type": "ECR Replication Action",
+  "source": "aws.ecr",
+  "account": "123456789012",
+  "time": "2026-08-27T01:02:30Z",
+  "region": "us-west-2",
+  "resources": [
+    "arn:aws:ecr:us-west-2:123456789012:repository/apps/samples/app"
+  ],
+  "detail": {
+    "result": "SUCCESS",
+    "repository-name": "apps/samples/app",
+    "image-digest": "sha256:abc",
+    "source-account": "123456789012",
+    "action-type": "REPLICATE",
+    "source-region": "ap-northeast-1",
+    "image-tag": "alice.790bf3ee04b441a96fb3d1860aea91fa09b72747"
+  }
+}`
+
+func TestDecoder_DecodeReplication(t *testing.T) {
+	t.Parallel()
+
+	event, err := Decoder{}.Decode([]byte(replicationPayload))
+	require.NoError(t, err)
+
+	// The host is the destination registry, not the source the image was
+	// pushed to, so rules written for the destination region match.
+	assert.Equal(t, "123456789012.dkr.ecr.us-west-2.amazonaws.com", event.Host)
+	assert.Equal(t, "apps/samples/app", event.Repository)
+	assert.Equal(t, "alice.790bf3ee04b441a96fb3d1860aea91fa09b72747", event.Tag)
+	assert.Equal(t, "sha256:abc", event.Digest)
+	assert.Equal(t, time.Date(2026, 8, 27, 1, 2, 30, 0, time.UTC), event.OccurredAt.UTC())
+}
+
 func TestDecoder_DecodeRejections(t *testing.T) {
 	t.Parallel()
 
@@ -58,6 +97,11 @@ func TestDecoder_DecodeRejections(t *testing.T) {
 		{
 			name:    "DELETE は対象外",
 			payload: `{"account":"1","region":"r","detail":{"action-type":"DELETE","repository-name":"a/b","image-tag":"t"}}`,
+			wantErr: model.ErrEventIgnored,
+		},
+		{
+			name:    "失敗した replication は対象外",
+			payload: `{"account":"1","region":"r","detail":{"action-type":"REPLICATE","result":"FAILURE","repository-name":"a/b","image-tag":"t"}}`,
 			wantErr: model.ErrEventIgnored,
 		},
 		{

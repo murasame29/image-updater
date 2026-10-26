@@ -19,15 +19,20 @@ import (
 const Kind = model.RegistryECR
 
 const (
-	actionPush    = "PUSH"
-	resultSuccess = "SUCCESS"
+	actionPush      = "PUSH"
+	actionReplicate = "REPLICATE"
+	resultSuccess   = "SUCCESS"
 
 	// hostFormat names the registry of an account in a region. Partitions other
 	// than aws (GovCloud, China) use a different suffix and are not supported.
 	hostFormat = "%s.dkr.ecr.%s.amazonaws.com"
 )
 
-// pushEvent is the EventBridge "ECR Image Action" payload.
+// pushEvent is the EventBridge payload of an "ECR Image Action" push and of an
+// "ECR Replication Action". Both carry the same detail fields that matter here;
+// the replication event adds source-region and source-account, which are not
+// needed because the top-level region already names the registry the image
+// arrived in.
 type pushEvent struct {
 	Account string `json:"account"`
 	Region  string `json:"region"`
@@ -41,7 +46,7 @@ type pushEvent struct {
 	} `json:"detail"`
 }
 
-// Decoder turns an EventBridge "ECR Image Action" payload into a domain event.
+// Decoder turns an EventBridge ECR payload into a domain event.
 type Decoder struct{}
 
 var _ model.EventDecoder = Decoder{}
@@ -50,19 +55,19 @@ var _ model.EventDecoder = Decoder{}
 //
 // A field the payload does not carry is not treated as a rejection, so a rule
 // that forwards a narrower event shape keeps working. Only an action or a result
-// that is explicitly something other than a successful push is skipped.
+// that is explicitly something other than a successful arrival is skipped.
 //
 // Returns:
 //
-//	The event, ErrEventIgnored when the payload is not a successful push, or an
-//	error when it cannot be read at all.
+//	The event, ErrEventIgnored when the payload is not a successful push or
+//	replication, or an error when it cannot be read at all.
 func (Decoder) Decode(payload []byte) (model.ImagePushEvent, error) {
 	var raw pushEvent
 	if err := json.Unmarshal(payload, &raw); err != nil {
 		return model.ImagePushEvent{}, fmt.Errorf("failed to unmarshal the ECR event: %w", err)
 	}
 
-	if raw.Detail.ActionType != "" && !strings.EqualFold(raw.Detail.ActionType, actionPush) {
+	if raw.Detail.ActionType != "" && !isArrival(raw.Detail.ActionType) {
 		return model.ImagePushEvent{}, fmt.Errorf("%w: action-type is %q", model.ErrEventIgnored, raw.Detail.ActionType)
 	}
 
@@ -92,6 +97,15 @@ func (Decoder) Decode(payload []byte) (model.ImagePushEvent, error) {
 		Digest:     raw.Detail.ImageDigest,
 		OccurredAt: occurredAt,
 	}, nil
+}
+
+// isArrival reports whether the action puts a new image into the registry the
+// event was emitted for. A cross-region replication lands the image in the
+// destination registry just as a push does, and ECR emits that event in the
+// destination region, so the host built from the event names the registry a
+// cluster in that region pulls from.
+func isArrival(action string) bool {
+	return strings.EqualFold(action, actionPush) || strings.EqualFold(action, actionReplicate)
 }
 
 // Host names the ECR registry of an account in a region.

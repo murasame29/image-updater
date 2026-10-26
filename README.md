@@ -1,12 +1,13 @@
 # image-updater
 
 [Argo CD Image Updater](https://github.com/argoproj-labs/argocd-image-updater) と同じく
-GitOps manifest のイメージ参照を更新する役割を持ち、コンテナレジストリの image push
-イベントを起点に GitHub PR を作る、event-driven（push型）の Git write-back ツール。
+GitOps manifest のイメージ参照を更新する役割を持ち、コンテナレジストリへの image 到着
+（push、またはクロスリージョンレプリケーションの完了）イベントを起点に GitHub PR を作る、
+event-driven（push型）の Git write-back ツール。
 
 ## What
 
-1. ECR の push イベントを EventBridge と SQS 経由で受け取る
+1. ECR の push / replication 完了イベントを EventBridge と SQS 経由で受け取る
 2. 設定ファイルのルールと突き合わせて、更新対象の manifest ディレクトリをすべて決める
 3. label 注釈が有効な場合だけ OCI label を1回読み、PR の説明を組み立てる
 4. 同じ manifest リポジトリの変更を1回の clone・commit・push・PR にまとめる
@@ -15,11 +16,11 @@ GitOps manifest のイメージ参照を更新する役割を持ち、コンテ�
 ```mermaid
 flowchart LR
     subgraph registry["Amazon ECR"]
-        push["image push"]
+        push["image push /<br/>replication"]
     end
 
     subgraph transport["AWS event transport"]
-        eventbridge["EventBridge<br/>ECR Image Action"]
+        eventbridge["EventBridge<br/>ECR Image Action /<br/>ECR Replication Action"]
         sqs["SQS"]
     end
 

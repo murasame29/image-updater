@@ -2,7 +2,7 @@
 
 日本語: [設定](../ja/configuration.md)
 
-The bundled runtime receives Amazon ECR image push events through EventBridge and SQS, then updates
+The bundled runtime receives Amazon ECR image push and replication completion events through EventBridge and SQS, then updates
 `kustomization.yaml` files hosted on GitHub. Environment variables configure the event transport and process,
 while `config.yaml` maps images to manifests and configures pull request messages.
 
@@ -18,7 +18,8 @@ Examples:
 
 ## Prerequisites
 
-- An SQS queue receiving ECR push events through EventBridge
+- An SQS queue receiving ECR `ECR Image Action` (push) or `ECR Replication Action` (cross-region replication completed) events through EventBridge
+  - A replication event is emitted in the destination region and the registry host is built from that region, so an instance serving a cluster there is configured with that region's queue and `registryURI`
 - A GitHub App that can push to the manifest repository
   - `contents: write`
   - `pull_requests: write`
