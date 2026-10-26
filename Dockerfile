@@ -1,9 +1,9 @@
-ARG GO_VERSION=1.27.0
-ARG DEBIAN_VERSION=bookworm
+ARG GO_VERSION=1.27.3
+ARG DEBIAN_VERSION=trixie
 ARG GO_LICENSES_VERSION=v2.0.1
 
 # build
-FROM golang:${GO_VERSION}-${DEBIAN_VERSION}@sha256:ded31c68586d2e49e760acc2e65a884b23d032e9bbbed0ae0c55abd3fcaf4452 AS build
+FROM golang:${GO_VERSION}-${DEBIAN_VERSION}@sha256:fbb7ae40b62ff8afe31662df570d39b4f5052ac32b90dae8e60d7657a20a74f4 AS build
 ARG GO_LICENSES_VERSION
 ARG VERSION=dev
 ARG COMMIT=unknown
@@ -66,7 +66,7 @@ RUN CGO_ENABLED=0 go build \
     cp LICENSE NOTICE /build/licenses/image-updater/
 
 # prod
-FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:d62067879de890a1def9da0e7766b7d20810a5e5555cef8506b752437d7a3e88
 WORKDIR /app
 COPY --from=build --chmod=755 /build/main /app/main
 COPY --from=build /build/licenses /licenses
