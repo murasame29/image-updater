@@ -67,13 +67,13 @@ exact SemVerまたは`image.digest`を使用する。
 Containerのbuild identityは環境設定なしで確認できる。
 
 ```bash
-docker run --rm ghcr.io/murasame29/image-updater:0.1.0 --version
-# image-updater version=0.1.0 commit=<commit SHA> build_date=<source commit timestamp; RFC3339 UTC>
+docker run --rm ghcr.io/murasame29/image-updater:0.2.0 --version
+# image-updater version=0.2.0 commit=<commit SHA> build_date=<source commit timestamp; RFC3339 UTC>
 ```
 
 ### Helm
 
-Chart `0.1.0`はapplication `0.1.0`をdefaultかつ検証済みversionとして使用する。`image.tag`が空なら
+Chart `0.2.0`はapplication `0.2.0`をdefaultかつ検証済みversionとして使用する。`image.tag`が空なら
 `Chart.appVersion`へfallbackし、`image.digest`を指定した場合はtagより優先する。
 EKSではlong-lived AWS credentialsをPodへ渡さず、IRSAまたはEKS Pod Identityの利用を推奨する。
 GitHub App private keyはHelm valuesへ埋め込まず、既存のKubernetes Secretからmountする。
@@ -89,7 +89,7 @@ cp example/values.example.yaml values.yaml
 
 helm upgrade --install image-updater \
   oci://ghcr.io/murasame29/charts/image-updater \
-  --version 0.1.0 \
+  --version 0.2.0 \
   --namespace image-updater \
   --values values.yaml
 ```
@@ -115,12 +115,12 @@ config.yaml・環境変数・queue event、Chartのpublic contractはvalues・re
 
 ```bash
 # masterのchecks成功後
-git tag -a v0.1.0 -m 'release application v0.1.0'
-git push origin v0.1.0
+git tag -a v0.2.0 -m 'release application v0.2.0'
+git push origin v0.2.0
 
 # container release成功後
-git tag -a chart-v0.1.0 -m 'release Helm chart v0.1.0'
-git push origin chart-v0.1.0
+git tag -a chart-v0.2.0 -m 'release Helm chart v0.2.0'
+git push origin chart-v0.2.0
 ```
 
 `vX.Y.Z`はmulti-architecture imageとGitHub Releaseを作成する。`chart-vA.B.C`はtag suffixと
