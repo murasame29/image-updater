@@ -58,7 +58,7 @@ jobs:
           helm template image-updater charts/image-updater
           --namespace image-updater
           --values charts/image-updater/ci/test-values.yaml
-          --set-string image.tag=0.1.1
+          --set-string image.tag=0.2.1
           > "${RUNNER_TEMP}/image-updater-explicit-tag.yaml"
 
       - name: Render digest priority
@@ -105,13 +105,13 @@ jobs:
           grep --fixed-strings --quiet '{{.Environment}}' "${inline_manifest}"
           test "$(grep --line-regexp --count 'kind: ConfigMap' "${inline_manifest}")" -eq 1
           grep --fixed-strings --quiet \
-            'image: "ghcr.io/murasame29/image-updater:0.1.0"' \
+            'image: "ghcr.io/murasame29/image-updater:0.2.0"' \
             "${inline_manifest}"
           grep --fixed-strings --quiet \
-            'app.kubernetes.io/version: "0.1.0"' \
+            'app.kubernetes.io/version: "0.2.0"' \
             "${inline_manifest}"
           grep --fixed-strings --quiet \
-            'image: "ghcr.io/murasame29/image-updater:0.1.1"' \
+            'image: "ghcr.io/murasame29/image-updater:0.2.1"' \
             "${RUNNER_TEMP}/image-updater-explicit-tag.yaml"
           grep --fixed-strings --quiet \
             'image: "ghcr.io/murasame29/image-updater@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' \
