@@ -105,10 +105,10 @@ jobs:
           grep --fixed-strings --quiet '{{.Environment}}' "${inline_manifest}"
           test "$(grep --line-regexp --count 'kind: ConfigMap' "${inline_manifest}")" -eq 1
           grep --fixed-strings --quiet \
-            'image: "ghcr.io/murasame29/image-updater:0.2.0"' \
+            'image: "ghcr.io/murasame29/image-updater:0.2.1"' \
             "${inline_manifest}"
           grep --fixed-strings --quiet \
-            'app.kubernetes.io/version: "0.2.0"' \
+            'app.kubernetes.io/version: "0.2.1"' \
             "${inline_manifest}"
           grep --fixed-strings --quiet \
             'image: "ghcr.io/murasame29/image-updater:9.9.9-test"' \
